@@ -1,4 +1,8 @@
-# Clawshake 🦞🤝
+<p align="center">
+  <img src="assets/clawshake-logo.jpg" alt="Clawshake" width="200"/>
+</p>
+
+# Clawshake
 
 **The handshake protocol for autonomous agent commerce — USDC escrow on Base**
 
