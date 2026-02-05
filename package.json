@@ -1,0 +1,24 @@
+{
+  "name": "clawshake",
+  "version": "1.0.0",
+  "description": "The handshake protocol for autonomous agent commerce — USDC escrow on Base",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "deploy:local": "hardhat run scripts/deploy.js",
+    "deploy:base-sepolia": "hardhat run scripts/deploy.js --network baseSepolia",
+    "demo": "node demo/scenarios/hire-chain.js"
+  },
+  "keywords": ["usdc", "agents", "escrow", "base", "openclaw", "clawshake"],
+  "author": "STARGA Inc",
+  "license": "MIT",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.22.0"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.1.0",
+    "dotenv": "^16.4.0",
+    "ethers": "^6.13.0"
+  }
+}
