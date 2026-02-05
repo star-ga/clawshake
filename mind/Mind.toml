@@ -9,7 +9,7 @@ name = "clawshake"
 version = "2.0.0"
 authors = ["STARGA, Inc. <info@star.ga>"]
 description = "Autonomous agent commerce — USDC escrow on Base, built in pure MIND"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/star-ga/clawshake"
 homepage = "https://star.ga"
 

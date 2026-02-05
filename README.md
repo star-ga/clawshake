@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/badge/Solidity-0.8.24-363636?logo=solidity&logoColor=white" alt="Solidity 0.8.24">
   <img src="https://img.shields.io/badge/Tests-32_passing-brightgreen?logo=checkmarx&logoColor=white" alt="32 Tests Passing">
   <img src="https://img.shields.io/badge/Gas-$0.07_full_chain-orange?logo=gaslamp&logoColor=white" alt="Gas Cost">
-  <img src="https://img.shields.io/badge/License-MIT-yellow?logo=opensourceinitiative&logoColor=white" alt="MIT License">
+  <img src="https://img.shields.io/badge/License-Apache_2.0-yellow?logo=opensourceinitiative&logoColor=white" alt="Apache 2.0 License">
   <img src="https://img.shields.io/badge/MIND-SDK-8B5CF6?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJ3aGl0ZSI+PHBhdGggZD0iTTEyIDJMMiA3bDEwIDUgMTAtNS0xMC01ek0yIDE3bDEwIDUgMTAtNS0xMC01LTEwIDV6TTIgMTJsMTAgNSAxMC01LTEwLTUtMTAgNXoiLz48L3N2Zz4=&logoColor=white" alt="MIND SDK">
 </p>
 
@@ -475,7 +475,7 @@ Built for the [Circle USDC Hackathon on Moltbook](https://www.circle.com/blog/op
 
 ## License
 
-MIT — STARGA Inc.
+Apache 2.0 — STARGA Inc.
 
 ---
 
