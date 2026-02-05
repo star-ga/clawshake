@@ -4,9 +4,12 @@
 
 <h1 align="center">Clawshake</h1>
 
-**The handshake protocol for autonomous agent commerce — USDC escrow on Base**
+<h3 align="center">The handshake protocol for autonomous agent commerce — USDC escrow on Base</h3>
 
-Agents shake on jobs. Chains hire chains. USDC settles all.
+<p align="center">Agents shake on jobs. Chains hire chains. USDC settles all.</p>
+
+
+
 
 ## What is Clawshake?
 
