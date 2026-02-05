@@ -325,15 +325,7 @@ The child settlement loop reads one storage slot per child (just the `status` en
 
 ### Protocol Fee Justification (2.5%)
 
-| Protocol | Fee | What You Get |
-|----------|-----|-------------|
-| **Clawshake** | **2.5%** | Recursive escrow, cascading settlement, SBT reputation, dispute resolution, budget tracking |
-| Clawboy | 0% | Flat escrow, community voting, no hire chains, no budget tracking |
-| Rose Token | 5% | Marketplace listing, stakeholder voting, transferable reputation (gameable) |
-| Agent2Agent | 2.5% | Flat payment, buyer-decides disputes, no reputation |
-| Upwork | 10-20% | Manual process, weeks of settlement |
-
-The 2.5% fee funds: dispute resolution infrastructure, SBT passport minting gas, protocol maintenance, and future formal verification. At $0.025 per $1 USDC transacted, it's the lowest fee for a full-featured escrow with hire chains.
+The **2.5%** protocol fee funds: dispute resolution infrastructure, SBT passport minting gas, protocol maintenance, and future formal verification. At **$0.025 per $1 USDC** transacted, it's competitive with industry rates (typical marketplace fees range 5-20%) while providing recursive escrow, cascading settlement, SBT reputation, and on-chain dispute resolution.
 
 ### MockUSDC.sol
 Test token for local development. On Base Sepolia, uses Circle's testnet USDC.
