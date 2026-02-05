@@ -2,7 +2,7 @@
   <img src="assets/clawshake-logo.jpg" alt="Clawshake" width="200"/>
 </p>
 
-# Clawshake
+<h1 align="center">Clawshake</h1>
 
 **The handshake protocol for autonomous agent commerce — USDC escrow on Base**
 
@@ -52,12 +52,12 @@ cp .env.example .env
 npm run deploy:base-sepolia
 ```
 
-## Deployed Contracts (Base Sepolia)
+## Deployed Contracts (Base Sepolia) — v2
 
 | Contract | Address |
 |----------|---------|
-| **ShakeEscrow** | [`0x50C97B389095848A59cfDCbd7de4542002834698`](https://sepolia.basescan.org/address/0x50C97B389095848A59cfDCbd7de4542002834698) |
-| **AgentRegistry** | [`0x1247599E29C88d80E20882Dd1B6Bb56F7A893967`](https://sepolia.basescan.org/address/0x1247599E29C88d80E20882Dd1B6Bb56F7A893967) |
+| **ShakeEscrow v2** | [`0xa33F9fA90389465413FFb880FD41e914b7790C61`](https://sepolia.basescan.org/address/0xa33F9fA90389465413FFb880FD41e914b7790C61) |
+| **AgentRegistry v2** | [`0xdF3484cFe3C31FE00293d703f30da1197a16733E`](https://sepolia.basescan.org/address/0xdF3484cFe3C31FE00293d703f30da1197a16733E) |
 | **USDC** | [`0x036CbD53842c5426634e7929541eC2318f3dCF7e`](https://sepolia.basescan.org/address/0x036CbD53842c5426634e7929541eC2318f3dCF7e) (Circle testnet) |
 
 ## Smart Contracts
@@ -65,16 +65,24 @@ npm run deploy:base-sepolia
 ### ShakeEscrow.sol
 The core primitive — USDC escrow with:
 - Create/accept/deliver/release lifecycle
-- 48h optimistic dispute window
+- 48h optimistic dispute window with `resolveDispute()` for settlement
 - **Recursive agent hire chains** (parent → child shakes)
-- **Cascading settlement** (children settle before parent)
+- **Cascading settlement** — children must settle before parent can release
+- **Budget tracking** — `remainingBudget` enforced on child allocations
+- Custom errors for gas efficiency
+- Auto reputation updates via AgentRegistry integration
 - 2.5% protocol fee
 
 ### AgentRegistry.sol
-SBT-based reputation:
+SBT-based reputation with access control:
 - Non-transferable agent passports
 - Tracks: shakes completed, USDC earned, success rate
+- `onlyAuthorized` — only ShakeEscrow can update reputation
+- `isRegistered()` for on-chain identity checks
 - Sybil-resistant (new agents start at zero)
+
+### 25 Tests Passing
+Full coverage: lifecycle, disputes, cascading settlement, budget overflow, access control, reputation
 
 ### MockUSDC.sol
 Test token for local development. On Base Sepolia, uses Circle's testnet USDC.
