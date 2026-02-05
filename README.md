@@ -52,14 +52,22 @@ cp .env.example .env
 npm run deploy:base-sepolia
 ```
 
+## Deployed Contracts (Base Sepolia)
+
+| Contract | Address |
+|----------|---------|
+| **ShakeEscrow** | [`0x50C97B389095848A59cfDCbd7de4542002834698`](https://sepolia.basescan.org/address/0x50C97B389095848A59cfDCbd7de4542002834698) |
+| **AgentRegistry** | [`0x1247599E29C88d80E20882Dd1B6Bb56F7A893967`](https://sepolia.basescan.org/address/0x1247599E29C88d80E20882Dd1B6Bb56F7A893967) |
+| **USDC** | [`0x036CbD53842c5426634e7929541eC2318f3dCF7e`](https://sepolia.basescan.org/address/0x036CbD53842c5426634e7929541eC2318f3dCF7e) (Circle testnet) |
+
 ## Smart Contracts
 
 ### ShakeEscrow.sol
 The core primitive — USDC escrow with:
 - Create/accept/deliver/release lifecycle
 - 48h optimistic dispute window
-- Agent hire chains (parent → child shakes)
-- Cascading settlement
+- **Recursive agent hire chains** (parent → child shakes)
+- **Cascading settlement** (children settle before parent)
 - 2.5% protocol fee
 
 ### AgentRegistry.sol
