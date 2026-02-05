@@ -115,7 +115,7 @@ Every Clawshake operation is gas-efficient on Base — full hire chains settle f
 
 **Full 2-child hire chain: 12 transactions, ~1.43M gas, ~$0.07 total on Base**
 
-The cascading settlement check adds only ~9.5K gas per `releaseShake` — the child status loop reads storage slots, no external calls. At Base L2 gas prices (~$0.05/100K gas), a full agent hire chain costs less than a single Ethereum L1 transfer.
+The cascading settlement check adds only **~9.5K gas** per `releaseShake` — the child status loop reads storage slots, no external calls. At Base L2 gas prices (~$0.05/100K gas), a full agent hire chain costs less than a single Ethereum L1 transfer.
 
 ```bash
 # Run benchmarks
@@ -133,7 +133,7 @@ Clawshake is designed with defense-in-depth for trustless agent interactions:
 | **Access control** | `onlyAuthorized` modifier — only ShakeEscrow can update AgentRegistry |
 | **Budget enforcement** | `remainingBudget` checked before every `createChildShake` — `ExceedsParentBudget` revert |
 | **Cascading integrity** | `ChildrenNotSettled` revert — parent cannot release until all children are Released or Refunded |
-| **Custom errors** | Gas-efficient reverts with 17 typed error codes (no string comparisons) |
+| **Custom errors** | Gas-efficient reverts with **17** typed error codes (no string comparisons) |
 | **Deadline enforcement** | `uint48` timestamps — auto-refund after deadline via `refundShake()` |
 | **Dispute window** | 48h optimistic window — requester can dispute, treasury resolves |
 | **SBT non-transferability** | No `transfer()` function — passports are soul-bound by design |
@@ -257,15 +257,15 @@ The SBT reputation system provides **reputation integrity**, not full sybil resi
 This is transparent about what v2 does and doesn't solve. SBTs make reputation non-transferable and tamper-proof; sybil resistance requires additional economic mechanisms that are out of scope for this hackathon.
 
 **Economic sybil deterrents (already in v2):**
-- Wash-trading via self-hire costs 2.5% protocol fee per level — 3 levels of self-referral burns 7.3% of principal
+- Wash-trading via self-hire costs **2.5%** protocol fee per level — 3 levels of self-referral burns **7.3%** of principal
 - Reputation farming requires real USDC at risk in escrow — not free to accumulate
 - Counterparty diversity: agents can check `totalShakes` vs unique requesters (via event logs) to detect farming patterns
 
 ### Recursion Safety
 
 **Depth limits**: Recursive hire chains have natural depth bounds:
-- Each level deducts from `remainingBudget` — a 1000 USDC shake hiring at 50% margin can only go 10 levels deep before budget reaches minimum viable amounts
-- Each level adds gas overhead — 20+ children per parent approaches practical limits
+- Each level deducts from `remainingBudget` — a **1000 USDC** shake hiring at 50% margin can only go **10 levels deep** before budget reaches minimum viable amounts
+- Each level adds gas overhead — **20+ children** per parent approaches practical limits
 - Practical depth for real workflows: 2-4 levels (client → lead → specialists)
 
 **Cycle prevention**: Self-hire (parent worker accepting own child shake) is technically possible but economically irrational:
@@ -319,9 +319,9 @@ Recursive hire chains scale linearly with child count:
 | 2 children | 2 | 158,194 | +4,736 per child |
 | N children | N | ~148,722 + 4,750*N | **O(N) linear** |
 
-The child settlement loop reads one storage slot per child (just the `status` enum) — no external calls, no token transfers in the loop. Even a 20-child hire chain would add only ~95K gas (~$0.005 on Base), keeping total release under 250K gas.
+The child settlement loop reads one storage slot per child (just the `status` enum) — no external calls, no token transfers in the loop. Even a 20-child hire chain would add only **~95K gas** (**~$0.005** on Base), keeping total release under **250K gas**.
 
-**Theoretical max**: ~100 children per parent before hitting the block gas limit (30M gas). In practice, agent hire chains of 3-10 children cover all real-world delegation patterns.
+**Theoretical max**: **~100 children** per parent before hitting the block gas limit (30M gas). In practice, agent hire chains of **3-10 children** cover all real-world delegation patterns.
 
 ### Protocol Fee Justification (2.5%)
 
@@ -372,14 +372,14 @@ mind --emit-grad-ir --func evaluate_job --autodiff src/agent.mind
 
 | | **MIND** | **Toon** |
 |--|----------|----------|
-| **Binary size** | ~2 MB (LLVM native) | ~18 MB (interpreter + runtime) |
-| **Startup** | <1ms (native binary) | ~200ms (VM warmup) |
-| **Memory** | 4 MB RSS (no GC) | 60+ MB (GC overhead) |
-| **Execution** | Native speed (LLVM O3) | 5-10x slower (interpreted) |
+| **Binary size** | **~2 MB** (LLVM native) | ~18 MB (interpreter + runtime) |
+| **Startup** | **<1ms** (native binary) | ~200ms (VM warmup) |
+| **Memory** | **4 MB** RSS (no GC) | 60+ MB (GC overhead) |
+| **Execution** | **Native speed** (LLVM O3) | 5-10x slower (interpreted) |
 | **IR output** | MIC format (inspectable) | Opaque bytecode |
 | **Crypto** | `std.crypto` (keccak256, secp256k1) | External dependency |
 | **Tensor ops** | First-class type system | Library bolt-on |
-| **Agent cost** | Sub-cent per invocation | ~$0.02+ per invocation |
+| **Agent cost** | **Sub-cent** per invocation | ~$0.02+ per invocation |
 | **Autodiff** | Compile-time (zero overhead) | Not supported |
 
 MIND compiles to native code via LLVM — no VM, no interpreter, no garbage collector. Agents start instantly, use minimal memory, and cost less to run at scale. For autonomous agents that execute thousands of shakes per day, this matters.
@@ -395,16 +395,16 @@ MIND compiles to native code via LLVM — no VM, no interpreter, no garbage coll
 |--|-------------|----------|-----------|
 | **Format** | Text (JSON) | Binary (TVM cells) | Binary (MIC frames) |
 | **Type safety** | None (string keys) | Runtime checked | Compile-time checked |
-| **Payload size** | ~400 bytes per call | ~180 bytes per cell | ~60 bytes per op |
-| **Parse overhead** | JSON parse + serialize | Cell decode + BOC | Zero (native structs) |
-| **Batch calls** | Separate JSON array | Separate messages | `MicOp::Batch` (single frame) |
-| **Error handling** | String matching `"error"` | Exit codes | Typed `MicError` enum |
+| **Payload size** | ~400 bytes per call | ~180 bytes per cell | **~60 bytes per op** |
+| **Parse overhead** | JSON parse + serialize | Cell decode + BOC | **Zero** (native structs) |
+| **Batch calls** | Separate JSON array | Separate messages | **`MicOp::Batch`** (single frame) |
+| **Error handling** | String matching `"error"` | Exit codes | **Typed `MicError` enum** |
 | **Inspectable** | Human-readable JSON | Opaque bytecode | `mind --emit-ir` (MIC text) |
 | **Transport** | HTTP only | ADNL protocol | HTTP, WebSocket, IPC |
 | **Signing** | External (ethers.js) | External (tonlib) | Built-in (`std.crypto`) |
-| **Overhead per agent call** | ~2ms parse + ~1ms serialize | ~1.5ms decode | ~0.01ms (zero-copy) |
+| **Overhead per agent call** | ~2ms parse + ~1ms serialize | ~1.5ms decode | **~0.01ms** (zero-copy) |
 | **Dependencies** | axios/fetch + JSON lib | tonlib + BOC codec | None (MIND stdlib) |
-| **Agent cost at scale** | ~$0.05/1K calls (parse CPU) | ~$0.03/1K calls | ~$0.001/1K calls |
+| **Agent cost at scale** | ~$0.05/1K calls (parse CPU) | ~$0.03/1K calls | **~$0.001/1K calls** |
 
 ### MIC@2 Binary Frame
 
@@ -426,7 +426,7 @@ a33F9fA90389465413FFb880FD41e914b7790C61    # target (20B)
 3a010c7d01b50e0d17dc79c8
 ```
 
-**51 bytes vs 389 bytes — 87% smaller.** No quotes, no keys, no redundant encoding. At 10,000 agent calls/day, MIC@2 saves ~3.2 MB of bandwidth and eliminates all JSON parse/serialize CPU.
+**51 bytes vs 389 bytes — 87% smaller.** No quotes, no keys, no redundant encoding. At **10,000 agent calls/day**, MIC@2 saves **~3.2 MB** of bandwidth and eliminates all JSON parse/serialize CPU.
 
 ### Mind Source (`mind/src/`)
 
