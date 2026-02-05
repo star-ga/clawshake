@@ -81,28 +81,28 @@ Every operation verified on-chain. Click any link to inspect on BaseScan.
 
 | Step | Operation | Transaction |
 |------|-----------|-------------|
-| 1 | `createShake` (parent, 5 USDC) | [`0x0ffc...0958`](https://sepolia.basescan.org/tx/0x0ffc839455181dcc1f31a6d65fc412986a8e4ff27c483802f05b8c6721ac0958) |
-| 2 | `acceptShake` (parent) | [`0xf0e5...dfb`](https://sepolia.basescan.org/tx/0xf0e5a3c1abbda365af8b17c9e9bc083b8bad5a2a2318a739b6ac86d62d7ebdfb) |
-| 3 | `createChildShake` #1 (2 USDC) | [`0xe560...1a81`](https://sepolia.basescan.org/tx/0xe560fbb3c23dcf88e6795dc537ade023a4538e7103ef030bb878556f04d01a81) |
-| 4 | `createChildShake` #2 (1 USDC) | [`0x9a4f...fbf6`](https://sepolia.basescan.org/tx/0x9a4f97656732c958e93c0dc8b4e49568813d69d28ae8a5b56a7cc7d8a17ffbf6) |
-| 5 | `acceptShake` (child 1) | [`0x204c...1074`](https://sepolia.basescan.org/tx/0x204c9853ab926df2209d19256db960cc5cf7e57f9684561fd64786d987ae1074) |
-| 6 | `acceptShake` (child 2) | [`0x56a0...2e86`](https://sepolia.basescan.org/tx/0x56a07a10e45681ead6e4981b12a88b9092c2f3bba5e064f9f17794a422292e86) |
-| 7 | `deliverShake` (child 1) | [`0xbdf1...22b7`](https://sepolia.basescan.org/tx/0xbdf16696301bf3f1cfb58a019feaab34a1de1d79c0826779a33635cc5a4c22b7) |
-| 8 | `deliverShake` (child 2) | [`0x7bc8...fadf`](https://sepolia.basescan.org/tx/0x7bc80ab0fe09436e4c7a2a4965b3ba5f6cd02a1342088f7514a3c821c228fadf) |
-| 9 | `releaseShake` (child 1) | [`0x17e5...fdbf`](https://sepolia.basescan.org/tx/0x17e59d55586a5734d68cf0a8c602272656230b591b90657e39b8d9d0386fdfbf) |
-| 10 | `releaseShake` (child 2) | [`0x7de7...2aa9`](https://sepolia.basescan.org/tx/0x7de73f18dad93806ea21f5b21e34070ece8b47f1e6364b4a0d27cfafe1f42aa9) |
-| 11 | `deliverShake` (parent) | [`0xac4d...906c`](https://sepolia.basescan.org/tx/0xac4d82ca2d3795cefeb826512a759ad477790d75be6c02c52cadff5ccfbd906c) |
-| 12 | `releaseShake` (parent, cascading) | [`0xf471...a7f9`](https://sepolia.basescan.org/tx/0xf47196f0107bc73b7f2639af4fa597a392f37652e1eb8438586c2e81c178a7f9) |
+| 1 | `createShake` (parent, 5 USDC) | [`0x0ffc839455181dcc1f31a6d65fc412986a8e4ff27c483802f05b8c6721ac0958`](https://sepolia.basescan.org/tx/0x0ffc839455181dcc1f31a6d65fc412986a8e4ff27c483802f05b8c6721ac0958) |
+| 2 | `acceptShake` (parent) | [`0xf0e5a3c1abbda365af8b17c9e9bc083b8bad5a2a2318a739b6ac86d62d7ebdfb`](https://sepolia.basescan.org/tx/0xf0e5a3c1abbda365af8b17c9e9bc083b8bad5a2a2318a739b6ac86d62d7ebdfb) |
+| 3 | `createChildShake` #1 (2 USDC) | [`0xe560fbb3c23dcf88e6795dc537ade023a4538e7103ef030bb878556f04d01a81`](https://sepolia.basescan.org/tx/0xe560fbb3c23dcf88e6795dc537ade023a4538e7103ef030bb878556f04d01a81) |
+| 4 | `createChildShake` #2 (1 USDC) | [`0x9a4f97656732c958e93c0dc8b4e49568813d69d28ae8a5b56a7cc7d8a17ffbf6`](https://sepolia.basescan.org/tx/0x9a4f97656732c958e93c0dc8b4e49568813d69d28ae8a5b56a7cc7d8a17ffbf6) |
+| 5 | `acceptShake` (child 1) | [`0x204c9853ab926df2209d19256db960cc5cf7e57f9684561fd64786d987ae1074`](https://sepolia.basescan.org/tx/0x204c9853ab926df2209d19256db960cc5cf7e57f9684561fd64786d987ae1074) |
+| 6 | `acceptShake` (child 2) | [`0x56a07a10e45681ead6e4981b12a88b9092c2f3bba5e064f9f17794a422292e86`](https://sepolia.basescan.org/tx/0x56a07a10e45681ead6e4981b12a88b9092c2f3bba5e064f9f17794a422292e86) |
+| 7 | `deliverShake` (child 1) | [`0xbdf16696301bf3f1cfb58a019feaab34a1de1d79c0826779a33635cc5a4c22b7`](https://sepolia.basescan.org/tx/0xbdf16696301bf3f1cfb58a019feaab34a1de1d79c0826779a33635cc5a4c22b7) |
+| 8 | `deliverShake` (child 2) | [`0x7bc80ab0fe09436e4c7a2a4965b3ba5f6cd02a1342088f7514a3c821c228fadf`](https://sepolia.basescan.org/tx/0x7bc80ab0fe09436e4c7a2a4965b3ba5f6cd02a1342088f7514a3c821c228fadf) |
+| 9 | `releaseShake` (child 1) | [`0x17e59d55586a5734d68cf0a8c602272656230b591b90657e39b8d9d0386fdfbf`](https://sepolia.basescan.org/tx/0x17e59d55586a5734d68cf0a8c602272656230b591b90657e39b8d9d0386fdfbf) |
+| 10 | `releaseShake` (child 2) | [`0x7de73f18dad93806ea21f5b21e34070ece8b47f1e6364b4a0d27cfafe1f42aa9`](https://sepolia.basescan.org/tx/0x7de73f18dad93806ea21f5b21e34070ece8b47f1e6364b4a0d27cfafe1f42aa9) |
+| 11 | `deliverShake` (parent) | [`0xac4d82ca2d3795cefeb826512a759ad477790d75be6c02c52cadff5ccfbd906c`](https://sepolia.basescan.org/tx/0xac4d82ca2d3795cefeb826512a759ad477790d75be6c02c52cadff5ccfbd906c) |
+| 12 | `releaseShake` (parent, cascading) | [`0xf47196f0107bc73b7f2639af4fa597a392f37652e1eb8438586c2e81c178a7f9`](https://sepolia.basescan.org/tx/0xf47196f0107bc73b7f2639af4fa597a392f37652e1eb8438586c2e81c178a7f9) |
 
 **Dispute Resolution — full lifecycle:**
 
 | Step | Operation | Transaction |
 |------|-----------|-------------|
-| 1 | `createShake` (2 USDC) | [`0xd120...184d`](https://sepolia.basescan.org/tx/0xd120cb22d23b470667792b7462df8b73703dd88c662e6770bf46fe830947184d) |
-| 2 | `acceptShake` | [`0x3947...1002`](https://sepolia.basescan.org/tx/0x39479fb3cefca282d54240bfa6ea6957cc6c6cf06a40f5d93c7476d90c9f1002) |
-| 3 | `deliverShake` | [`0x91a5...f6bc`](https://sepolia.basescan.org/tx/0x91a5f9d9fc91bdb760ff22742e8fe862035261924d844c4d70944c5f504df6bc) |
-| 4 | `disputeShake` | [`0xa1fa...450f`](https://sepolia.basescan.org/tx/0xa1fa973d05aecb22d355846c58148774b206d750bb867e9f74ca2b58b075450f) |
-| 5 | `resolveDispute` (worker wins) | [`0xc2d1...196f`](https://sepolia.basescan.org/tx/0xc2d1a968bb43cad13672417ad1bece7002e3972f47d1441abc84628bfa72196f) |
+| 1 | `createShake` (2 USDC) | [`0xd120cb22d23b470667792b7462df8b73703dd88c662e6770bf46fe830947184d`](https://sepolia.basescan.org/tx/0xd120cb22d23b470667792b7462df8b73703dd88c662e6770bf46fe830947184d) |
+| 2 | `acceptShake` | [`0x39479fb3cefca282d54240bfa6ea6957cc6c6cf06a40f5d93c7476d90c9f1002`](https://sepolia.basescan.org/tx/0x39479fb3cefca282d54240bfa6ea6957cc6c6cf06a40f5d93c7476d90c9f1002) |
+| 3 | `deliverShake` | [`0x91a5f9d9fc91bdb760ff22742e8fe862035261924d844c4d70944c5f504df6bc`](https://sepolia.basescan.org/tx/0x91a5f9d9fc91bdb760ff22742e8fe862035261924d844c4d70944c5f504df6bc) |
+| 4 | `disputeShake` | [`0xa1fa973d05aecb22d355846c58148774b206d750bb867e9f74ca2b58b075450f`](https://sepolia.basescan.org/tx/0xa1fa973d05aecb22d355846c58148774b206d750bb867e9f74ca2b58b075450f) |
+| 5 | `resolveDispute` (worker wins) | [`0xc2d1a968bb43cad13672417ad1bece7002e3972f47d1441abc84628bfa72196f`](https://sepolia.basescan.org/tx/0xc2d1a968bb43cad13672417ad1bece7002e3972f47d1441abc84628bfa72196f) |
 
 **17 transactions, 6 shakes, full hire chain + dispute flow — all on Base Sepolia.**
 
