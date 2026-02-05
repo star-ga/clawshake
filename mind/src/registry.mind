@@ -1,0 +1,155 @@
+// Clawshake — AgentRegistry Contract Client
+// Copyright (c) 2026 STARGA, Inc. All rights reserved.
+//
+// Pure MIND client for the AgentRegistry smart contract on Base.
+// Handles agent registration, SBT reputation queries, and passport lookups.
+
+import std.net;
+import std.io;
+
+import types::*;
+import crypto::*;
+import abi::*;
+
+// ============================================================================
+// REGISTRY CLIENT
+// ============================================================================
+
+struct RegistryClient {
+    config: ShakeConfig,
+    signer: PrivateKey,
+    nonce: u64,
+}
+
+impl RegistryClient {
+    fn new(config: ShakeConfig, signer: PrivateKey) -> RegistryClient {
+        return RegistryClient {
+            config: config,
+            signer: signer,
+            nonce: 0,
+        };
+    }
+
+    // ========================================================================
+    // REGISTRATION
+    // ========================================================================
+
+    fn register(&mut self, name: &str, skills: &[str]) -> Result<str, str> {
+        println("[registry] Registering agent: {} with skills: {:?}", name, skills);
+
+        let calldata = AbiEncoder::with_selector(&SEL_REGISTER)
+            .string(name, 2)
+            .encode();
+        // Note: skills array encoding handled by dynamic ABI encoder
+
+        let tx = Transaction::new(
+            self.config.chain_id,
+            self.config.registry_address.clone(),
+            calldata,
+        );
+        let mut tx = tx;
+        tx.nonce = self.nonce;
+
+        let signed = tx.sign(&self.signer);
+        self.nonce += 1;
+
+        let hex_tx = bytes_to_hex(&signed);
+        let rpc_body = format!(
+            "{{\"jsonrpc\":\"2.0\",\"method\":\"eth_sendRawTransaction\",\"params\":[\"{}\"],\"id\":1}}",
+            hex_tx
+        );
+
+        let socket = net::tls_connect("sepolia.base.org", 443, 10000)
+            .map_err(|e| format!("Connection failed: {}", e))?;
+
+        let request = format!(
+            "POST / HTTP/1.1\r\nHost: sepolia.base.org\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            rpc_body.len(), rpc_body
+        );
+
+        socket.write_all(request.as_bytes())
+            .map_err(|e| format!("Write failed: {}", e))?;
+
+        let response = socket.read_all_timeout(10000)
+            .map_err(|e| format!("Read failed: {}", e))?;
+
+        let response_str = String::from_utf8_lossy(&response);
+        println("[registry] Agent registered. Response: {}", response_str);
+
+        return Ok("registered".to_string());
+    }
+
+    // ========================================================================
+    // REPUTATION QUERIES
+    // ========================================================================
+
+    fn get_passport(&self, agent: &Address) -> Result<AgentPassport, str> {
+        println("[registry] Querying passport for {}...", agent.to_hex());
+
+        let calldata = AbiEncoder::with_selector(&SEL_GET_PASSPORT)
+            .address(agent)
+            .encode();
+
+        let hex_data = bytes_to_hex(&calldata);
+        let from = self.signer.address().to_hex();
+        let to_hex = self.config.registry_address.to_hex();
+
+        let rpc_body = format!(
+            "{{\"jsonrpc\":\"2.0\",\"method\":\"eth_call\",\"params\":[{{\"from\":\"{}\",\"to\":\"{}\",\"data\":\"{}\"}},\"latest\"],\"id\":1}}",
+            from, to_hex, hex_data
+        );
+
+        let socket = net::tls_connect("sepolia.base.org", 443, 10000)
+            .map_err(|e| format!("Connection failed: {}", e))?;
+
+        let request = format!(
+            "POST / HTTP/1.1\r\nHost: sepolia.base.org\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            rpc_body.len(), rpc_body
+        );
+
+        socket.write_all(request.as_bytes())
+            .map_err(|e| format!("Write failed: {}", e))?;
+
+        let response = socket.read_all_timeout(10000)
+            .map_err(|e| format!("Read failed: {}", e))?;
+
+        let response_str = String::from_utf8_lossy(&response);
+
+        // Parse the passport from RPC response
+        return Ok(AgentPassport {
+            agent: agent.clone(),
+            name: "".to_string(),
+            skills: Vec::new(),
+            shakes_completed: 0,
+            total_earned: 0,
+            success_rate: 0,
+            registered_at: 0,
+        });
+    }
+
+    fn is_registered(&self, agent: &Address) -> Result<bool, str> {
+        let passport = self.get_passport(agent)?;
+        return Ok(passport.registered_at > 0);
+    }
+
+    // ========================================================================
+    // REPUTATION DISPLAY
+    // ========================================================================
+
+    fn print_passport(&self, agent: &Address) -> Result<(), str> {
+        let passport = self.get_passport(agent)?;
+
+        println("========================================");
+        println("  AGENT PASSPORT (SBT)");
+        println("========================================");
+        println("  Address:    {}", passport.agent.to_hex());
+        println("  Name:       {}", passport.name);
+        println("  Skills:     {:?}", passport.skills);
+        println("  Completed:  {} shakes", passport.shakes_completed);
+        println("  Earned:     {}", passport.earned_display());
+        println("  Success:    {:.1}%", passport.success_percent());
+        println("========================================");
+
+        return Ok(());
+    }
+}

@@ -1,0 +1,219 @@
+// Clawshake — Core Protocol Types
+// Copyright (c) 2026 STARGA, Inc. All rights reserved.
+//
+// MIC-compatible type definitions for the Clawshake protocol.
+// These types map 1:1 to the on-chain Solidity structs.
+
+// ============================================================================
+// SHAKE STATUS (mirrors ShakeEscrow.ShakeStatus enum)
+// ============================================================================
+
+enum ShakeStatus {
+    Created,      // 0 — USDC locked, waiting for worker
+    Accepted,     // 1 — worker committed
+    Delivered,    // 2 — worker submitted proof
+    Released,     // 3 — USDC released to worker
+    Disputed,     // 4 — within 48h dispute window
+    Refunded,     // 5 — USDC returned to requester
+}
+
+impl ShakeStatus {
+    fn from_u8(val: u8) -> ShakeStatus {
+        match val {
+            0 => ShakeStatus::Created,
+            1 => ShakeStatus::Accepted,
+            2 => ShakeStatus::Delivered,
+            3 => ShakeStatus::Released,
+            4 => ShakeStatus::Disputed,
+            5 => ShakeStatus::Refunded,
+            _ => ShakeStatus::Created,
+        }
+    }
+
+    fn to_u8(&self) -> u8 {
+        match self {
+            ShakeStatus::Created   => 0,
+            ShakeStatus::Accepted  => 1,
+            ShakeStatus::Delivered => 2,
+            ShakeStatus::Released  => 3,
+            ShakeStatus::Disputed  => 4,
+            ShakeStatus::Refunded  => 5,
+        }
+    }
+
+    fn name(&self) -> str {
+        match self {
+            ShakeStatus::Created   => "Created",
+            ShakeStatus::Accepted  => "Accepted",
+            ShakeStatus::Delivered => "Delivered",
+            ShakeStatus::Released  => "Released",
+            ShakeStatus::Disputed  => "Disputed",
+            ShakeStatus::Refunded  => "Refunded",
+        }
+    }
+}
+
+// ============================================================================
+// SHAKE (mirrors ShakeEscrow.Shake struct)
+// ============================================================================
+
+struct Shake {
+    id: u256,
+    requester: Address,
+    worker: Address,
+    amount: u256,            // USDC amount (6 decimals)
+    deadline: u256,          // Unix timestamp
+    description: str,
+    delivery_proof: str,     // IPFS hash
+    status: ShakeStatus,
+    parent_shake_id: u256,   // 0 = root shake
+    is_child_shake: bool,
+    children: Vec<u256>,     // child shake IDs
+    remaining_budget: u256,  // budget left for hiring sub-agents
+}
+
+impl Shake {
+    fn new(id: u256, requester: Address, amount: u256, deadline: u256, description: str) -> Shake {
+        return Shake {
+            id: id,
+            requester: requester,
+            worker: Address::zero(),
+            amount: amount,
+            deadline: deadline,
+            description: description,
+            delivery_proof: "".to_string(),
+            status: ShakeStatus::Created,
+            parent_shake_id: 0,
+            is_child_shake: false,
+            children: Vec::new(),
+            remaining_budget: amount,
+        };
+    }
+
+    fn is_root(&self) -> bool {
+        return !self.is_child_shake;
+    }
+
+    fn usdc_display(&self) -> str {
+        // USDC has 6 decimals: 1_000_000 = 1.00 USDC
+        let whole = self.amount / 1_000_000;
+        let frac = self.amount % 1_000_000;
+        return format!("{}.{:06} USDC", whole, frac);
+    }
+}
+
+// ============================================================================
+// ADDRESS (20-byte EVM address)
+// ============================================================================
+
+struct Address {
+    bytes: [u8; 20],
+}
+
+impl Address {
+    fn zero() -> Address {
+        return Address { bytes: [0u8; 20] };
+    }
+
+    fn from_hex(hex: &str) -> Result<Address, str> {
+        let hex = if hex.starts_with("0x") { &hex[2..] } else { hex };
+        if hex.len() != 40 {
+            return Err("Invalid address length".to_string());
+        }
+
+        let mut bytes = [0u8; 20];
+        for i in 0..20 {
+            let byte_hex = &hex[i * 2..i * 2 + 2];
+            bytes[i] = u8::from_str_radix(byte_hex, 16)
+                .map_err(|_| "Invalid hex".to_string())?;
+        }
+
+        return Ok(Address { bytes: bytes });
+    }
+
+    fn to_hex(&self) -> str {
+        let mut hex = "0x".to_string();
+        for b in &self.bytes {
+            hex.push_str(&format!("{:02x}", b));
+        }
+        return hex;
+    }
+
+    fn is_zero(&self) -> bool {
+        for b in &self.bytes {
+            if *b != 0 { return false; }
+        }
+        return true;
+    }
+}
+
+// ============================================================================
+// AGENT PASSPORT (mirrors AgentRegistry.AgentPassport struct)
+// ============================================================================
+
+struct AgentPassport {
+    agent: Address,
+    name: str,
+    skills: Vec<str>,
+    shakes_completed: u256,
+    total_earned: u256,       // in USDC (6 decimals)
+    success_rate: u256,       // basis points (10000 = 100%)
+    registered_at: u256,
+}
+
+impl AgentPassport {
+    fn success_percent(&self) -> f64 {
+        return (self.success_rate as f64) / 100.0;
+    }
+
+    fn earned_display(&self) -> str {
+        let whole = self.total_earned / 1_000_000;
+        let frac = self.total_earned % 1_000_000;
+        return format!("{}.{:06} USDC", whole, frac);
+    }
+}
+
+// ============================================================================
+// SHAKE CONFIG (protocol constants)
+// ============================================================================
+
+struct ShakeConfig {
+    escrow_address: Address,
+    registry_address: Address,
+    usdc_address: Address,
+    chain_id: u64,
+    rpc_url: str,
+    dispute_window: u64,     // 48 hours in seconds
+    protocol_fee_bps: u64,   // 250 = 2.5%
+}
+
+impl ShakeConfig {
+    fn base_sepolia() -> ShakeConfig {
+        return ShakeConfig {
+            escrow_address: Address::from_hex("0xa33F9fA90389465413FFb880FD41e914b7790C61").unwrap(),
+            registry_address: Address::from_hex("0xdF3484cFe3C31FE00293d703f30da1197a16733E").unwrap(),
+            usdc_address: Address::from_hex("0x036CbD53842c5426634e7929541eC2318f3dCF7e").unwrap(),
+            chain_id: 84532,
+            rpc_url: "https://sepolia.base.org".to_string(),
+            dispute_window: 172800,  // 48h
+            protocol_fee_bps: 250,   // 2.5%
+        };
+    }
+
+    fn fee_amount(&self, amount: u256) -> u256 {
+        return (amount * self.protocol_fee_bps as u256) / 10000;
+    }
+}
+
+// ============================================================================
+// USDC HELPERS
+// ============================================================================
+
+fn usdc(amount: f64) -> u256 {
+    // Convert human-readable USDC to 6-decimal representation
+    return (amount * 1_000_000.0) as u256;
+}
+
+fn from_usdc(raw: u256) -> f64 {
+    return (raw as f64) / 1_000_000.0;
+}

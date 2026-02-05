@@ -1,0 +1,280 @@
+// Clawshake — ShakeEscrow Contract Client (MIC@2)
+// Copyright (c) 2026 STARGA, Inc. All rights reserved.
+//
+// Pure MIND client for ShakeEscrow on Base.
+// Uses MIC@2 transport instead of raw JSON-RPC.
+
+import std.io;
+import std.time;
+
+import types::*;
+import crypto::*;
+import abi::*;
+import mic::*;
+
+// ============================================================================
+// ESCROW CLIENT (MIC@2)
+// ============================================================================
+
+struct EscrowClient {
+    config: ShakeConfig,
+    transport: MicTransport,
+}
+
+impl EscrowClient {
+    fn new(config: ShakeConfig, signer: PrivateKey) -> EscrowClient {
+        let transport = MicTransport::base_sepolia(signer);
+        return EscrowClient {
+            config: config,
+            transport: transport,
+        };
+    }
+
+    // ========================================================================
+    // USDC OPERATIONS
+    // ========================================================================
+
+    fn approve_usdc(&mut self, amount: u256) -> Result<str, MicError> {
+        println("[escrow] Approving {} USDC via MIC@2...", from_usdc(amount));
+
+        let calldata = encode_approve(&self.config.escrow_address, amount);
+
+        let result = self.transport.exec(MicOp::SendTx {
+            target: self.config.usdc_address.clone(),
+            calldata: calldata,
+            value: 0,
+            gas_limit: 100_000,
+        })?;
+
+        match result {
+            MicResult::Hash(hash) => {
+                println("[escrow] USDC approved. TX: {}", hash);
+                return Ok(hash);
+            }
+            _ => return Err(MicError::InvalidResponse("Expected hash".to_string())),
+        }
+    }
+
+    fn balance(&mut self) -> Result<u256, MicError> {
+        let addr = self.transport.signer.address();
+        let calldata = encode_balance_of(&addr);
+
+        let result = self.transport.exec(MicOp::Call {
+            target: self.config.usdc_address.clone(),
+            calldata: calldata,
+        })?;
+
+        match result {
+            MicResult::Bytes(data) => {
+                let mut decoder = AbiDecoder::new(data);
+                return Ok(decoder.uint256());
+            }
+            _ => return Err(MicError::InvalidResponse("Expected bytes".to_string())),
+        }
+    }
+
+    // ========================================================================
+    // SHAKE LIFECYCLE — all via MIC@2 opcodes
+    // ========================================================================
+
+    fn create_shake(
+        &mut self,
+        worker: &Address,
+        amount: u256,
+        deadline: u256,
+        description: &str,
+    ) -> Result<u256, MicError> {
+        println("[escrow] Creating shake: {} for {} via MIC@2",
+            description, from_usdc(amount));
+
+        // Approve USDC first
+        self.approve_usdc(amount)?;
+
+        // Create shake
+        let calldata = encode_create_shake(
+            &self.config.usdc_address,
+            amount,
+            deadline,
+            description,
+        );
+
+        let result = self.transport.exec(MicOp::SendTx {
+            target: self.config.escrow_address.clone(),
+            calldata: calldata,
+            value: 0,
+            gas_limit: 300_000,
+        })?;
+
+        match result {
+            MicResult::Hash(hash) => {
+                // Get receipt to extract shake ID
+                let receipt_result = self.transport.exec(MicOp::GetReceipt {
+                    tx_hash: hash.clone(),
+                })?;
+
+                let shake_id = self.extract_shake_id(&receipt_result);
+                println("[escrow] Shake #{} created. TX: {}", shake_id, hash);
+                return Ok(shake_id);
+            }
+            _ => return Err(MicError::InvalidResponse("Expected hash".to_string())),
+        }
+    }
+
+    fn accept_shake(&mut self, shake_id: u256) -> Result<str, MicError> {
+        println("[escrow] Accepting shake #{} via MIC@2...", shake_id);
+
+        let calldata = encode_accept_shake(shake_id);
+
+        let result = self.transport.exec(MicOp::SendTx {
+            target: self.config.escrow_address.clone(),
+            calldata: calldata,
+            value: 0,
+            gas_limit: 200_000,
+        })?;
+
+        match result {
+            MicResult::Hash(hash) => {
+                println("[escrow] Shake #{} accepted. TX: {}", shake_id, hash);
+                return Ok(hash);
+            }
+            _ => return Err(MicError::InvalidResponse("Expected hash".to_string())),
+        }
+    }
+
+    fn deliver_shake(&mut self, shake_id: u256, proof: &str) -> Result<str, MicError> {
+        println("[escrow] Delivering shake #{} via MIC@2...", shake_id);
+
+        let calldata = encode_deliver_shake(shake_id, proof);
+
+        let result = self.transport.exec(MicOp::SendTx {
+            target: self.config.escrow_address.clone(),
+            calldata: calldata,
+            value: 0,
+            gas_limit: 200_000,
+        })?;
+
+        match result {
+            MicResult::Hash(hash) => {
+                println("[escrow] Shake #{} delivered. TX: {}", shake_id, hash);
+                return Ok(hash);
+            }
+            _ => return Err(MicError::InvalidResponse("Expected hash".to_string())),
+        }
+    }
+
+    fn release_shake(&mut self, shake_id: u256) -> Result<str, MicError> {
+        println("[escrow] Releasing shake #{} via MIC@2...", shake_id);
+
+        let calldata = encode_release_shake(shake_id);
+
+        let result = self.transport.exec(MicOp::SendTx {
+            target: self.config.escrow_address.clone(),
+            calldata: calldata,
+            value: 0,
+            gas_limit: 300_000,
+        })?;
+
+        match result {
+            MicResult::Hash(hash) => {
+                println("[escrow] Shake #{} released. TX: {}", shake_id, hash);
+                return Ok(hash);
+            }
+            _ => return Err(MicError::InvalidResponse("Expected hash".to_string())),
+        }
+    }
+
+    // ========================================================================
+    // CHILD SHAKE (AGENT HIRE CHAIN) — via MIC@2
+    // ========================================================================
+
+    fn create_child_shake(
+        &mut self,
+        parent_id: u256,
+        worker: &Address,
+        amount: u256,
+        deadline: u256,
+        description: &str,
+    ) -> Result<u256, MicError> {
+        println("[escrow] Hiring sub-agent via MIC@2: {} ({} USDC)",
+            description, from_usdc(amount));
+
+        let calldata = encode_create_child_shake(
+            parent_id,
+            &self.config.usdc_address,
+            amount,
+            deadline,
+            description,
+        );
+
+        let result = self.transport.exec(MicOp::SendTx {
+            target: self.config.escrow_address.clone(),
+            calldata: calldata,
+            value: 0,
+            gas_limit: 300_000,
+        })?;
+
+        match result {
+            MicResult::Hash(hash) => {
+                let receipt_result = self.transport.exec(MicOp::GetReceipt {
+                    tx_hash: hash.clone(),
+                })?;
+                let child_id = self.extract_shake_id(&receipt_result);
+                println("[escrow] Child shake #{} created (parent #{}). TX: {}",
+                    child_id, parent_id, hash);
+                return Ok(child_id);
+            }
+            _ => return Err(MicError::InvalidResponse("Expected hash".to_string())),
+        }
+    }
+
+    // ========================================================================
+    // DISPUTE — via MIC@2
+    // ========================================================================
+
+    fn dispute_shake(&mut self, shake_id: u256) -> Result<str, MicError> {
+        println("[escrow] Disputing shake #{} via MIC@2...", shake_id);
+
+        let calldata = AbiEncoder::with_selector(&SEL_DISPUTE_SHAKE)
+            .uint256(shake_id)
+            .encode();
+
+        let result = self.transport.exec(MicOp::SendTx {
+            target: self.config.escrow_address.clone(),
+            calldata: calldata,
+            value: 0,
+            gas_limit: 200_000,
+        })?;
+
+        match result {
+            MicResult::Hash(hash) => {
+                println("[escrow] Shake #{} disputed. TX: {}", shake_id, hash);
+                return Ok(hash);
+            }
+            _ => return Err(MicError::InvalidResponse("Expected hash".to_string())),
+        }
+    }
+
+    // ========================================================================
+    // EVENT PARSING
+    // ========================================================================
+
+    fn extract_shake_id(&self, result: &MicResult) -> u256 {
+        match result {
+            MicResult::Receipt(receipt) => {
+                if !receipt.logs.is_empty() {
+                    let log = &receipt.logs[0];
+                    if log.topics.len() > 1 {
+                        // Shake ID is the first indexed topic
+                        let mut val: u256 = 0;
+                        for b in &log.topics[1] {
+                            val = (val << 8) | (*b as u256);
+                        }
+                        return val;
+                    }
+                }
+                return 1;
+            }
+            _ => return 1,
+        }
+    }
+}

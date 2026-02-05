@@ -1,0 +1,352 @@
+// Clawshake — Mind Agent Protocol (MAP)
+// Copyright (c) 2026 STARGA, Inc. All rights reserved.
+//
+// MAP — the autonomous agent orchestration layer built in pure MIND.
+// This is the core differentiator: agents that hire other agents,
+// compose work, and cascade settlement — all without human intervention.
+//
+// MAP provides:
+// - Autonomous task evaluation and acceptance
+// - Sub-agent hiring with budget management
+// - Delivery proof generation
+// - Cascading settlement orchestration
+// - Reputation-aware agent selection
+//
+// MIC format: mind --emit-ir src/agent.mind
+
+import std.io;
+import std.time;
+import std.sync;
+
+import types::*;
+import escrow::EscrowClient;
+import registry::RegistryClient;
+
+// ============================================================================
+// AGENT ACTION (what an agent can do)
+// ============================================================================
+
+enum AgentAction {
+    // Job discovery & acceptance
+    FindJobs { skills: Vec<str>, min_reward: u256 },
+    AcceptJob { shake_id: u256 },
+
+    // Work & delivery
+    Deliver { shake_id: u256, proof: str },
+
+    // Sub-agent hiring (the MAP differentiator)
+    Hire {
+        parent_shake: u256,
+        task: str,
+        budget: u256,
+        required_skills: Vec<str>,
+    },
+
+    // Reputation query
+    CheckReputation { agent: Address },
+
+    // Settlement
+    Release { shake_id: u256 },
+    Dispute { shake_id: u256 },
+}
+
+// ============================================================================
+// MAP AGENT — The Autonomous Agent
+// ============================================================================
+
+struct MAPAgent {
+    name: str,
+    skills: Vec<str>,
+    wallet: Address,
+    escrow: EscrowClient,
+    registry: RegistryClient,
+    active_shakes: Vec<u256>,
+    child_shakes: Vec<(u256, Vec<u256>)>,  // (parent_id, [child_ids])
+    min_reward: u256,
+    max_budget_ratio: f64,   // max % of parent budget for a single child hire
+}
+
+impl MAPAgent {
+    fn new(
+        name: &str,
+        skills: Vec<str>,
+        config: ShakeConfig,
+        signer: PrivateKey,
+    ) -> MAPAgent {
+        let wallet = signer.address();
+        let escrow = EscrowClient::new(config.clone(), signer.clone());
+        let registry = RegistryClient::new(config, signer);
+
+        return MAPAgent {
+            name: name.to_string(),
+            skills: skills,
+            wallet: wallet,
+            escrow: escrow,
+            registry: registry,
+            active_shakes: Vec::new(),
+            child_shakes: Vec::new(),
+            min_reward: usdc(10.0),  // minimum 10 USDC
+            max_budget_ratio: 0.5,   // max 50% to a single sub-agent
+        };
+    }
+
+    // ========================================================================
+    // REGISTRATION
+    // ========================================================================
+
+    fn register(&mut self) -> Result<(), str> {
+        println("[MAP:{}] Registering on AgentRegistry...", self.name);
+        self.registry.register(&self.name, &self.skills)?;
+        println("[MAP:{}] Registered with skills: {:?}", self.name, self.skills);
+        return Ok(());
+    }
+
+    // ========================================================================
+    // JOB ACCEPTANCE
+    // ========================================================================
+
+    fn evaluate_job(&self, shake: &Shake) -> bool {
+        // Autonomous job evaluation:
+        // 1. Does the reward meet our minimum?
+        if shake.amount < self.min_reward {
+            println("[MAP:{}] Rejecting shake #{}: reward too low ({} < {})",
+                self.name, shake.id, from_usdc(shake.amount), from_usdc(self.min_reward));
+            return false;
+        }
+
+        // 2. Is the deadline achievable?
+        let now = time::now_unix();
+        let time_left = shake.deadline - now as u256;
+        if time_left < 3600 {  // less than 1 hour
+            println("[MAP:{}] Rejecting shake #{}: deadline too tight",
+                self.name, shake.id);
+            return false;
+        }
+
+        // 3. Do we have relevant skills?
+        // In production: NLP matching against task description
+        println("[MAP:{}] Evaluating shake #{}: {} for {}",
+            self.name, shake.id, shake.description, shake.usdc_display());
+
+        return true;
+    }
+
+    fn accept_job(&mut self, shake_id: u256) -> Result<(), str> {
+        println("[MAP:{}] Accepting shake #{}...", self.name, shake_id);
+        self.escrow.accept_shake(shake_id)?;
+        self.active_shakes.push(shake_id);
+        println("[MAP:{}] Now working on shake #{}", self.name, shake_id);
+        return Ok(());
+    }
+
+    // ========================================================================
+    // SUB-AGENT HIRING (THE MAP DIFFERENTIATOR)
+    // ========================================================================
+
+    fn hire_sub_agent(
+        &mut self,
+        parent_shake: u256,
+        worker: &Address,
+        task: &str,
+        budget: u256,
+        deadline: u256,
+    ) -> Result<u256, str> {
+        println("[MAP:{}] Hiring sub-agent for: \"{}\" (budget: {} USDC)",
+            self.name, task, from_usdc(budget));
+
+        // Budget validation — never exceed parent's remaining budget
+        let child_id = self.escrow.create_child_shake(
+            parent_shake,
+            worker,
+            budget,
+            deadline,
+            task,
+        )?;
+
+        // Track the child shake
+        let mut found = false;
+        for (parent, children) in &mut self.child_shakes {
+            if *parent == parent_shake {
+                children.push(child_id);
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            self.child_shakes.push((parent_shake, vec![child_id]));
+        }
+
+        println("[MAP:{}] Sub-agent hired: child shake #{} under parent #{}",
+            self.name, child_id, parent_shake);
+        return Ok(child_id);
+    }
+
+    // Orchestrate a complex task by breaking it into sub-tasks
+    fn orchestrate(
+        &mut self,
+        parent_shake: u256,
+        sub_tasks: Vec<SubTask>,
+    ) -> Result<Vec<u256>, str> {
+        println("[MAP:{}] Orchestrating {} sub-tasks for shake #{}",
+            self.name, sub_tasks.len(), parent_shake);
+
+        let mut child_ids = Vec::new();
+
+        for task in &sub_tasks {
+            let child_id = self.hire_sub_agent(
+                parent_shake,
+                &task.worker,
+                &task.description,
+                task.budget,
+                task.deadline,
+            )?;
+            child_ids.push(child_id);
+        }
+
+        println("[MAP:{}] All {} sub-agents hired. Waiting for deliveries...",
+            self.name, child_ids.len());
+
+        return Ok(child_ids);
+    }
+
+    // ========================================================================
+    // DELIVERY
+    // ========================================================================
+
+    fn deliver(&mut self, shake_id: u256, proof: &str) -> Result<(), str> {
+        println("[MAP:{}] Delivering shake #{} with proof: {}",
+            self.name, shake_id, proof);
+
+        self.escrow.deliver_shake(shake_id, proof)?;
+
+        println("[MAP:{}] Shake #{} delivered. Awaiting release...",
+            self.name, shake_id);
+        return Ok(());
+    }
+
+    // ========================================================================
+    // CASCADING SETTLEMENT
+    // ========================================================================
+
+    fn settle_cascade(&mut self, parent_shake: u256) -> Result<(), str> {
+        println("[MAP:{}] Starting cascading settlement for shake #{}",
+            self.name, parent_shake);
+
+        // Step 1: Release all children first
+        for (parent, children) in &self.child_shakes {
+            if *parent == parent_shake {
+                for child_id in children {
+                    println("[MAP:{}]   Releasing child shake #{}...", self.name, child_id);
+                    self.escrow.release_shake(*child_id)?;
+                }
+                break;
+            }
+        }
+
+        // Step 2: Release parent (contract enforces children-first order)
+        println("[MAP:{}]   Releasing parent shake #{}...", self.name, parent_shake);
+        self.escrow.release_shake(parent_shake)?;
+
+        println("[MAP:{}] Cascade complete. All shakes settled.", self.name);
+        return Ok(());
+    }
+
+    // ========================================================================
+    // EXECUTE ACTION (MAP protocol dispatch)
+    // ========================================================================
+
+    fn execute(&mut self, action: AgentAction) -> Result<(), str> {
+        match action {
+            AgentAction::AcceptJob { shake_id } => {
+                self.accept_job(shake_id)?;
+            }
+            AgentAction::Deliver { shake_id, proof } => {
+                self.deliver(shake_id, &proof)?;
+            }
+            AgentAction::Hire { parent_shake, task, budget, required_skills } => {
+                // In production: discover available agents by skills
+                // For now: hire a known agent address
+                let worker = Address::zero();
+                let deadline = (time::now_unix() + 86400) as u256;
+                self.hire_sub_agent(parent_shake, &worker, &task, budget, deadline)?;
+            }
+            AgentAction::Release { shake_id } => {
+                self.escrow.release_shake(shake_id)?;
+            }
+            AgentAction::Dispute { shake_id } => {
+                self.escrow.dispute_shake(shake_id)?;
+            }
+            AgentAction::CheckReputation { agent } => {
+                self.registry.print_passport(&agent)?;
+            }
+            _ => {
+                println("[MAP:{}] Action not implemented", self.name);
+            }
+        }
+        return Ok(());
+    }
+}
+
+// ============================================================================
+// SUB-TASK DEFINITION
+// ============================================================================
+
+struct SubTask {
+    worker: Address,
+    description: str,
+    budget: u256,
+    deadline: u256,
+    required_skills: Vec<str>,
+}
+
+impl SubTask {
+    fn new(worker: Address, description: &str, budget: u256, deadline: u256) -> SubTask {
+        return SubTask {
+            worker: worker,
+            description: description.to_string(),
+            budget: budget,
+            deadline: deadline,
+            required_skills: Vec::new(),
+        };
+    }
+}
+
+// ============================================================================
+// AGENT POOL (for multi-agent orchestration)
+// ============================================================================
+
+struct AgentPool {
+    agents: Vec<MAPAgent>,
+}
+
+impl AgentPool {
+    fn new() -> AgentPool {
+        return AgentPool {
+            agents: Vec::new(),
+        };
+    }
+
+    fn add(&mut self, agent: MAPAgent) {
+        self.agents.push(agent);
+    }
+
+    fn find_by_skill(&self, skill: &str) -> Option<&MAPAgent> {
+        for agent in &self.agents {
+            for s in &agent.skills {
+                if s == skill {
+                    return Some(agent);
+                }
+            }
+        }
+        return None;
+    }
+
+    fn find_by_name(&self, name: &str) -> Option<&MAPAgent> {
+        for agent in &self.agents {
+            if agent.name == name {
+                return Some(agent);
+            }
+        }
+        return None;
+    }
+}

@@ -1,0 +1,218 @@
+// Clawshake — EVM ABI Encoding/Decoding
+// Copyright (c) 2026 STARGA, Inc. All rights reserved.
+//
+// Solidity ABI encoding for contract interactions.
+// All values are padded to 32-byte words.
+
+import types::Address;
+
+// ============================================================================
+// ABI ENCODER
+// ============================================================================
+
+struct AbiEncoder {
+    buffer: Vec<u8>,
+    dynamic_offset: usize,
+    dynamic_data: Vec<u8>,
+}
+
+impl AbiEncoder {
+    fn new() -> AbiEncoder {
+        return AbiEncoder {
+            buffer: Vec::new(),
+            dynamic_offset: 0,
+            dynamic_data: Vec::new(),
+        };
+    }
+
+    fn with_selector(sel: &[u8; 4]) -> AbiEncoder {
+        let mut enc = AbiEncoder::new();
+        enc.buffer.extend_from_slice(sel);
+        return enc;
+    }
+
+    // Encode uint256
+    fn uint256(mut self, val: u256) -> Self {
+        let mut word = [0u8; 32];
+        let mut v = val;
+        for i in (0..32).rev() {
+            word[i] = (v & 0xFF) as u8;
+            v >>= 8;
+        }
+        self.buffer.extend_from_slice(&word);
+        return self;
+    }
+
+    // Encode address (left-padded to 32 bytes)
+    fn address(mut self, addr: &Address) -> Self {
+        let mut word = [0u8; 32];
+        for i in 0..20 {
+            word[12 + i] = addr.bytes[i];
+        }
+        self.buffer.extend_from_slice(&word);
+        return self;
+    }
+
+    // Encode bool
+    fn bool(mut self, val: bool) -> Self {
+        let mut word = [0u8; 32];
+        if val {
+            word[31] = 1;
+        }
+        self.buffer.extend_from_slice(&word);
+        return self;
+    }
+
+    // Encode dynamic string (offset + data)
+    fn string(mut self, s: &str, param_count: usize) -> Self {
+        // Write offset pointer
+        let offset = param_count * 32;
+        self = self.uint256(offset as u256);
+
+        // Store dynamic data (will be appended after all static params)
+        let bytes = s.as_bytes();
+        // Length
+        let mut len_word = [0u8; 32];
+        let mut l = bytes.len();
+        for i in (0..32).rev() {
+            len_word[i] = (l & 0xFF) as u8;
+            l >>= 8;
+        }
+        self.dynamic_data.extend_from_slice(&len_word);
+
+        // Data (padded to 32 bytes)
+        self.dynamic_data.extend_from_slice(bytes);
+        let padding = (32 - (bytes.len() % 32)) % 32;
+        for _ in 0..padding {
+            self.dynamic_data.push(0);
+        }
+
+        return self;
+    }
+
+    // Finalize: combine static params + dynamic data
+    fn encode(self) -> Vec<u8> {
+        let mut result = self.buffer.clone();
+        result.extend_from_slice(&self.dynamic_data);
+        return result;
+    }
+}
+
+// ============================================================================
+// ABI DECODER
+// ============================================================================
+
+struct AbiDecoder {
+    data: Vec<u8>,
+    offset: usize,
+}
+
+impl AbiDecoder {
+    fn new(data: Vec<u8>) -> AbiDecoder {
+        return AbiDecoder {
+            data: data,
+            offset: 0,
+        };
+    }
+
+    fn skip_selector(mut self) -> Self {
+        self.offset = 4;
+        return self;
+    }
+
+    fn uint256(&mut self) -> u256 {
+        let mut val: u256 = 0;
+        for i in 0..32 {
+            val = (val << 8) | (self.data[self.offset + i] as u256);
+        }
+        self.offset += 32;
+        return val;
+    }
+
+    fn address(&mut self) -> Address {
+        let mut bytes = [0u8; 20];
+        for i in 0..20 {
+            bytes[i] = self.data[self.offset + 12 + i];
+        }
+        self.offset += 32;
+        return Address { bytes: bytes };
+    }
+
+    fn bool(&mut self) -> bool {
+        let val = self.data[self.offset + 31] != 0;
+        self.offset += 32;
+        return val;
+    }
+
+    fn u8_val(&mut self) -> u8 {
+        let val = self.data[self.offset + 31];
+        self.offset += 32;
+        return val;
+    }
+}
+
+// ============================================================================
+// CONVENIENCE ENCODERS
+// ============================================================================
+
+fn encode_create_shake(
+    usdc_token: &Address,
+    amount: u256,
+    deadline: u256,
+    description: &str,
+) -> Vec<u8> {
+    return AbiEncoder::with_selector(&SEL_CREATE_SHAKE)
+        .address(usdc_token)
+        .uint256(amount)
+        .uint256(deadline)
+        .string(description, 4)
+        .encode();
+}
+
+fn encode_accept_shake(shake_id: u256) -> Vec<u8> {
+    return AbiEncoder::with_selector(&SEL_ACCEPT_SHAKE)
+        .uint256(shake_id)
+        .encode();
+}
+
+fn encode_deliver_shake(shake_id: u256, proof: &str) -> Vec<u8> {
+    return AbiEncoder::with_selector(&SEL_DELIVER_SHAKE)
+        .uint256(shake_id)
+        .string(proof, 2)
+        .encode();
+}
+
+fn encode_release_shake(shake_id: u256) -> Vec<u8> {
+    return AbiEncoder::with_selector(&SEL_RELEASE_SHAKE)
+        .uint256(shake_id)
+        .encode();
+}
+
+fn encode_create_child_shake(
+    parent_id: u256,
+    usdc_token: &Address,
+    amount: u256,
+    deadline: u256,
+    description: &str,
+) -> Vec<u8> {
+    return AbiEncoder::with_selector(&SEL_CREATE_CHILD)
+        .uint256(parent_id)
+        .address(usdc_token)
+        .uint256(amount)
+        .uint256(deadline)
+        .string(description, 5)
+        .encode();
+}
+
+fn encode_approve(spender: &Address, amount: u256) -> Vec<u8> {
+    return AbiEncoder::with_selector(&SEL_APPROVE)
+        .address(spender)
+        .uint256(amount)
+        .encode();
+}
+
+fn encode_balance_of(account: &Address) -> Vec<u8> {
+    return AbiEncoder::with_selector(&SEL_BALANCE_OF)
+        .address(account)
+        .encode();
+}

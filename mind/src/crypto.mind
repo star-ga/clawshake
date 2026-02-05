@@ -1,0 +1,299 @@
+// Clawshake — Cryptographic Primitives
+// Copyright (c) 2026 STARGA, Inc. All rights reserved.
+//
+// EVM-compatible crypto for agent transaction signing:
+// - Keccak-256 hashing (Ethereum's hash function)
+// - secp256k1 ECDSA signing
+// - EIP-712 typed data hashing
+// - Transaction encoding (EIP-1559)
+
+import std.crypto;
+
+// ============================================================================
+// KECCAK-256 (Ethereum standard hash)
+// ============================================================================
+
+fn keccak256(data: &[u8]) -> [u8; 32] {
+    return crypto::keccak256(data);
+}
+
+fn keccak256_str(s: &str) -> [u8; 32] {
+    return keccak256(s.as_bytes());
+}
+
+// ============================================================================
+// FUNCTION SELECTOR (first 4 bytes of keccak256)
+// ============================================================================
+
+fn selector(signature: &str) -> [u8; 4] {
+    let hash = keccak256_str(signature);
+    let mut sel = [0u8; 4];
+    sel[0] = hash[0];
+    sel[1] = hash[1];
+    sel[2] = hash[2];
+    sel[3] = hash[3];
+    return sel;
+}
+
+// Precomputed selectors for ShakeEscrow functions
+const SEL_CREATE_SHAKE: [u8; 4]       = selector("createShake(address,uint256,uint256,string)");
+const SEL_ACCEPT_SHAKE: [u8; 4]       = selector("acceptShake(uint256)");
+const SEL_DELIVER_SHAKE: [u8; 4]      = selector("deliverShake(uint256,string)");
+const SEL_RELEASE_SHAKE: [u8; 4]      = selector("releaseShake(uint256)");
+const SEL_CREATE_CHILD: [u8; 4]       = selector("createChildShake(uint256,address,uint256,uint256,string)");
+const SEL_DISPUTE_SHAKE: [u8; 4]      = selector("disputeShake(uint256)");
+const SEL_RESOLVE_DISPUTE: [u8; 4]    = selector("resolveDispute(uint256,bool)");
+
+// Precomputed selectors for AgentRegistry functions
+const SEL_REGISTER: [u8; 4]           = selector("registerAgent(string,string[])");
+const SEL_RECORD_SHAKE: [u8; 4]       = selector("recordShake(address,uint256,bool)");
+const SEL_GET_PASSPORT: [u8; 4]       = selector("getPassport(address)");
+
+// Precomputed selectors for USDC (ERC-20)
+const SEL_APPROVE: [u8; 4]            = selector("approve(address,uint256)");
+const SEL_BALANCE_OF: [u8; 4]         = selector("balanceOf(address)");
+const SEL_TRANSFER: [u8; 4]           = selector("transfer(address,uint256)");
+
+// ============================================================================
+// SECP256K1 SIGNING
+// ============================================================================
+
+struct PrivateKey {
+    bytes: [u8; 32],
+}
+
+struct Signature {
+    r: [u8; 32],
+    s: [u8; 32],
+    v: u8,
+}
+
+impl PrivateKey {
+    fn from_hex(hex: &str) -> Result<PrivateKey, str> {
+        let hex = if hex.starts_with("0x") { &hex[2..] } else { hex };
+        if hex.len() != 64 {
+            return Err("Invalid private key length".to_string());
+        }
+
+        let mut bytes = [0u8; 32];
+        for i in 0..32 {
+            bytes[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
+                .map_err(|_| "Invalid hex".to_string())?;
+        }
+
+        return Ok(PrivateKey { bytes: bytes });
+    }
+
+    fn address(&self) -> Address {
+        // Derive public key -> keccak256 -> last 20 bytes
+        let pubkey = crypto::secp256k1_pubkey(&self.bytes);
+        let hash = keccak256(&pubkey[1..]);  // skip 0x04 prefix
+        let mut addr_bytes = [0u8; 20];
+        for i in 0..20 {
+            addr_bytes[i] = hash[12 + i];
+        }
+        return Address { bytes: addr_bytes };
+    }
+
+    fn sign(&self, msg_hash: &[u8; 32]) -> Signature {
+        let (r, s, v) = crypto::secp256k1_sign(&self.bytes, msg_hash);
+        return Signature { r: r, s: s, v: v };
+    }
+}
+
+impl Signature {
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut sig = Vec::with_capacity(65);
+        sig.extend_from_slice(&self.r);
+        sig.extend_from_slice(&self.s);
+        sig.push(self.v);
+        return sig;
+    }
+
+    fn to_hex(&self) -> str {
+        let bytes = self.to_bytes();
+        let mut hex = "0x".to_string();
+        for b in &bytes {
+            hex.push_str(&format!("{:02x}", b));
+        }
+        return hex;
+    }
+}
+
+// ============================================================================
+// EIP-1559 TRANSACTION
+// ============================================================================
+
+struct Transaction {
+    chain_id: u64,
+    nonce: u64,
+    max_priority_fee: u256,
+    max_fee: u256,
+    gas_limit: u64,
+    to: Address,
+    value: u256,
+    data: Vec<u8>,
+}
+
+impl Transaction {
+    fn new(chain_id: u64, to: Address, data: Vec<u8>) -> Transaction {
+        return Transaction {
+            chain_id: chain_id,
+            nonce: 0,
+            max_priority_fee: 1_000_000_000,  // 1 gwei
+            max_fee: 10_000_000_000,           // 10 gwei
+            gas_limit: 300_000,
+            to: to,
+            value: 0,
+            data: data,
+        };
+    }
+
+    fn sign(&self, key: &PrivateKey) -> Vec<u8> {
+        // RLP encode transaction fields
+        let encoded = rlp_encode_tx(self);
+
+        // Hash with EIP-1559 prefix
+        let mut to_hash = Vec::new();
+        to_hash.push(0x02);  // EIP-1559 type
+        to_hash.extend_from_slice(&encoded);
+
+        let hash = keccak256(&to_hash);
+
+        // Sign
+        let sig = key.sign(&hash);
+
+        // Encode signed transaction
+        let mut signed = Vec::new();
+        signed.push(0x02);
+        signed.extend_from_slice(&rlp_encode_signed_tx(self, &sig));
+
+        return signed;
+    }
+}
+
+// ============================================================================
+// RLP ENCODING (minimal EVM transaction encoding)
+// ============================================================================
+
+fn rlp_encode_u64(val: u64) -> Vec<u8> {
+    if val == 0 {
+        return vec![0x80];
+    }
+
+    let mut bytes = Vec::new();
+    let mut v = val;
+    while v > 0 {
+        bytes.insert(0, (v & 0xFF) as u8);
+        v >>= 8;
+    }
+
+    if bytes.len() == 1 && bytes[0] < 0x80 {
+        return bytes;
+    }
+
+    let mut result = vec![(0x80 + bytes.len()) as u8];
+    result.extend_from_slice(&bytes);
+    return result;
+}
+
+fn rlp_encode_bytes(data: &[u8]) -> Vec<u8> {
+    if data.len() == 1 && data[0] < 0x80 {
+        return vec![data[0]];
+    }
+
+    if data.len() <= 55 {
+        let mut result = vec![(0x80 + data.len()) as u8];
+        result.extend_from_slice(data);
+        return result;
+    }
+
+    let len_bytes = encode_length(data.len());
+    let mut result = vec![(0xb7 + len_bytes.len()) as u8];
+    result.extend_from_slice(&len_bytes);
+    result.extend_from_slice(data);
+    return result;
+}
+
+fn rlp_encode_list(items: &[Vec<u8>]) -> Vec<u8> {
+    let mut payload = Vec::new();
+    for item in items {
+        payload.extend_from_slice(item);
+    }
+
+    if payload.len() <= 55 {
+        let mut result = vec![(0xc0 + payload.len()) as u8];
+        result.extend_from_slice(&payload);
+        return result;
+    }
+
+    let len_bytes = encode_length(payload.len());
+    let mut result = vec![(0xf7 + len_bytes.len()) as u8];
+    result.extend_from_slice(&len_bytes);
+    result.extend_from_slice(&payload);
+    return result;
+}
+
+fn encode_length(len: usize) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut l = len;
+    while l > 0 {
+        bytes.insert(0, (l & 0xFF) as u8);
+        l >>= 8;
+    }
+    return bytes;
+}
+
+fn rlp_encode_tx(tx: &Transaction) -> Vec<u8> {
+    let items = vec![
+        rlp_encode_u64(tx.chain_id),
+        rlp_encode_u64(tx.nonce),
+        rlp_encode_bytes(&u256_to_bytes(tx.max_priority_fee)),
+        rlp_encode_bytes(&u256_to_bytes(tx.max_fee)),
+        rlp_encode_u64(tx.gas_limit),
+        rlp_encode_bytes(&tx.to.bytes),
+        rlp_encode_bytes(&u256_to_bytes(tx.value)),
+        rlp_encode_bytes(&tx.data),
+        rlp_encode_list(&[]),  // access list (empty)
+    ];
+    return rlp_encode_list(&items);
+}
+
+fn rlp_encode_signed_tx(tx: &Transaction, sig: &Signature) -> Vec<u8> {
+    let items = vec![
+        rlp_encode_u64(tx.chain_id),
+        rlp_encode_u64(tx.nonce),
+        rlp_encode_bytes(&u256_to_bytes(tx.max_priority_fee)),
+        rlp_encode_bytes(&u256_to_bytes(tx.max_fee)),
+        rlp_encode_u64(tx.gas_limit),
+        rlp_encode_bytes(&tx.to.bytes),
+        rlp_encode_bytes(&u256_to_bytes(tx.value)),
+        rlp_encode_bytes(&tx.data),
+        rlp_encode_list(&[]),  // access list
+        rlp_encode_u64((sig.v - 27) as u64),
+        rlp_encode_bytes(&sig.r),
+        rlp_encode_bytes(&sig.s),
+    ];
+    return rlp_encode_list(&items);
+}
+
+fn u256_to_bytes(val: u256) -> Vec<u8> {
+    if val == 0 {
+        return vec![];
+    }
+    let mut bytes = Vec::new();
+    let mut v = val;
+    while v > 0 {
+        bytes.insert(0, (v & 0xFF) as u8);
+        v >>= 8;
+    }
+    return bytes;
+}
+
+fn bytes_to_hex(data: &[u8]) -> str {
+    let mut hex = "0x".to_string();
+    for b in data {
+        hex.push_str(&format!("{:02x}", b));
+    }
+    return hex;
+}

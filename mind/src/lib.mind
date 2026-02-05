@@ -1,0 +1,42 @@
+// Clawshake — Agent Commerce Protocol
+// Copyright (c) 2026 STARGA, Inc. All rights reserved.
+//
+// Pure MIND implementation of the Clawshake protocol:
+// - Agent registration and SBT reputation
+// - USDC escrow lifecycle (create/accept/deliver/release)
+// - Recursive agent hire chains with cascading settlement
+// - Mind Agent Protocol (MAP) for autonomous agent orchestration
+//
+// On-chain contracts: Solidity on Base (EVM)
+// Off-chain agent SDK: 100% MIND
+
+// Core protocol types
+pub mod types;
+
+// EVM ABI encoding/decoding
+pub mod abi;
+
+// Keccak256 hashing and secp256k1 signing
+pub mod crypto;
+
+// MIC@2 transport — replaces JSON-RPC with typed MIC opcodes
+pub mod mic;
+
+// ShakeEscrow contract client (uses MIC@2)
+pub mod escrow;
+
+// AgentRegistry contract client
+pub mod registry;
+
+// Mind Agent Protocol — autonomous agent orchestration
+pub mod agent;
+
+// Re-exports
+pub use types::Shake;
+pub use types::ShakeStatus;
+pub use types::AgentPassport;
+pub use types::ShakeConfig;
+pub use agent::MAPAgent;
+pub use agent::AgentAction;
+pub use escrow::EscrowClient;
+pub use registry::RegistryClient;

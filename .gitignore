@@ -3,3 +3,4 @@ cache/
 artifacts/
 .env
 deployment-*.json
+mind/target/

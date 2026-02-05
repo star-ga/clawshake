@@ -1,0 +1,5 @@
+module {
+  %0 = const.i64 0
+  output %0
+}  // next_id = 1
+

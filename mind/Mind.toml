@@ -1,0 +1,44 @@
+# Clawshake — Agent Commerce Protocol in Pure MIND
+# Copyright (c) 2026 STARGA, Inc. All rights reserved.
+#
+# MIND Compiler: https://mindlang.dev | https://github.com/star-ga/mind
+# Emit MIC: mind --emit-ir src/main.mind
+
+[package]
+name = "clawshake"
+version = "2.0.0"
+authors = ["STARGA, Inc. <info@star.ga>"]
+description = "Autonomous agent commerce — USDC escrow on Base, built in pure MIND"
+license = "MIT"
+repository = "https://github.com/star-ga/clawshake"
+homepage = "https://star.ga"
+
+[build]
+entry = "src/main.mind"
+output = "clawshake"
+optimization = "aggressive"
+
+[features]
+default = ["agent", "escrow"]
+agent = []
+escrow = []
+map = []       # Mind Agent Protocol extensions
+mic = []       # MIC format IR output
+
+[targets.cpu]
+backend = "cpu"
+output = "clawshake-cpu"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+debug = false
+
+[profile.dev]
+opt-level = 0
+debug = true
