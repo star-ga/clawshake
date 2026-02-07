@@ -9,6 +9,10 @@ interface IAgentRegistry {
     function recordShake(address agent, uint256 earned, bool success) external;
 }
 
+interface IFeeOracle {
+    function getAdjustedFee(uint256 shakeAmount, uint256 chainDepth) external view returns (uint256 feeBps);
+}
+
 /**
  * @title ShakeEscrow
  * @notice The core primitive of Clawshake — trustless USDC escrow for agent-to-agent commerce.
@@ -45,12 +49,15 @@ contract ShakeEscrow is ReentrancyGuard {
     error NotDisputed();
     error NotTreasury();
     error ChildrenNotSettled();
+    error ChildDisputed();
+    error SubtreeNotClean();
 
     // --- State ---
     IERC20 public immutable usdc;
     IAgentRegistry public registry;
+    IFeeOracle public feeOracle;
     address public treasury;
-    uint256 public protocolFeeBps = 250; // 2.5%
+    uint256 public protocolFeeBps = 250; // 2.5% (fallback when no oracle)
     uint48 public disputeWindow = 48 hours;
 
     uint256 public nextShakeId;
@@ -68,6 +75,7 @@ contract ShakeEscrow is ReentrancyGuard {
         bytes32 taskHash;     // IPFS hash of task spec
         bytes32 deliveryHash; // IPFS hash of delivery proof
         bool isChildShake;    // true if created via createChildShake
+        uint48 disputeFrozenUntil; // 0 = not frozen, >0 = frozen until child dispute resolves
     }
 
     mapping(uint256 => Shake) public shakes;
@@ -84,6 +92,9 @@ contract ShakeEscrow is ReentrancyGuard {
     event DisputeResolved(uint256 indexed shakeId, bool workerWins);
     event ChildShakeCreated(uint256 indexed parentShakeId, uint256 indexed childShakeId, uint256 amount);
     event RegistryUpdated(address indexed newRegistry);
+    event FeeOracleUpdated(address indexed newOracle);
+    event ParentFrozen(uint256 indexed parentShakeId, uint256 indexed childShakeId);
+    event ParentUnfrozen(uint256 indexed parentShakeId);
 
     constructor(address _usdc, address _treasury) {
         usdc = IERC20(_usdc);
@@ -97,6 +108,31 @@ contract ShakeEscrow is ReentrancyGuard {
         if (msg.sender != treasury) revert NotTreasury();
         registry = IAgentRegistry(_registry);
         emit RegistryUpdated(_registry);
+    }
+
+    /// @notice Set the FeeOracle for dynamic fee calculation
+    function setFeeOracle(address _oracle) external {
+        if (msg.sender != treasury) revert NotTreasury();
+        feeOracle = IFeeOracle(_oracle);
+        emit FeeOracleUpdated(_oracle);
+    }
+
+    /// @notice Get effective fee in bps — uses oracle if set, else static fallback
+    function _getFeeBps(uint256 shakeId) internal view returns (uint256) {
+        if (address(feeOracle) != address(0)) {
+            uint256 depth = _getChainDepth(shakeId);
+            return feeOracle.getAdjustedFee(shakes[shakeId].amount, depth);
+        }
+        return protocolFeeBps;
+    }
+
+    /// @notice Calculate chain depth for a shake (0 = root)
+    function _getChainDepth(uint256 shakeId) internal view returns (uint256 depth) {
+        Shake storage s = shakes[shakeId];
+        while (s.isChildShake) {
+            depth++;
+            s = shakes[s.parentShakeId];
+        }
     }
 
     // --- Core Shake Lifecycle ---
@@ -124,7 +160,8 @@ contract ShakeEscrow is ReentrancyGuard {
             status: ShakeStatus.Pending,
             taskHash: taskHash,
             deliveryHash: bytes32(0),
-            isChildShake: false
+            isChildShake: false,
+            disputeFrozenUntil: 0
         });
 
         usdc.safeTransferFrom(msg.sender, address(this), amount);
@@ -157,13 +194,21 @@ contract ShakeEscrow is ReentrancyGuard {
     }
 
     /// @notice Release payment after dispute window (or manual accept by requester)
-    /// @dev Enforces cascading settlement: all children must be settled first
+    /// @dev Enforces cascading settlement: all children must be settled AND subtree must be clean
     function releaseShake(uint256 shakeId) external nonReentrant {
         Shake storage s = shakes[shakeId];
         if (s.status != ShakeStatus.Delivered) revert NotDelivered();
 
+        // Subtree cleanliness: no descendant can be Disputed
+        if (!_isSubtreeClean(shakeId)) revert SubtreeNotClean();
+
         bool isRequester = msg.sender == s.requester;
-        bool windowPassed = block.timestamp >= s.deliveredAt + disputeWindow;
+        // Dispute window considers frozen extension: max(deliveredAt + disputeWindow, disputeFrozenUntil)
+        uint48 effectiveWindow = s.deliveredAt + disputeWindow;
+        if (s.disputeFrozenUntil > effectiveWindow) {
+            effectiveWindow = s.disputeFrozenUntil;
+        }
+        bool windowPassed = block.timestamp >= effectiveWindow;
         if (!isRequester && !windowPassed) revert DisputeWindowActive();
 
         // Cascading settlement: all children must be Released or Refunded
@@ -175,7 +220,8 @@ contract ShakeEscrow is ReentrancyGuard {
             }
         }
 
-        uint256 fee = (s.amount * protocolFeeBps) / 10000;
+        uint256 feeBps = _getFeeBps(shakeId);
+        uint256 fee = (s.amount * feeBps) / 10000;
         uint256 childSpend = s.amount - remainingBudget[shakeId];
         uint256 workerNet = s.amount - childSpend - fee;
 
@@ -192,7 +238,7 @@ contract ShakeEscrow is ReentrancyGuard {
         emit ShakeReleased(shakeId, workerNet, fee);
     }
 
-    /// @notice Requester disputes during window
+    /// @notice Requester disputes during window — freezes parent chain
     function disputeShake(uint256 shakeId) external {
         Shake storage s = shakes[shakeId];
         if (s.status != ShakeStatus.Delivered) revert NotDelivered();
@@ -201,6 +247,9 @@ contract ShakeEscrow is ReentrancyGuard {
 
         s.status = ShakeStatus.Disputed;
         emit ShakeDisputed(shakeId, msg.sender);
+
+        // Freeze parent chain — walk up and extend dispute windows
+        _freezeParentChain(shakeId);
     }
 
     /// @notice Treasury resolves a dispute
@@ -211,7 +260,8 @@ contract ShakeEscrow is ReentrancyGuard {
         if (msg.sender != treasury) revert NotTreasury();
 
         if (workerWins) {
-            uint256 fee = (s.amount * protocolFeeBps) / 10000;
+            uint256 feeBps = _getFeeBps(shakeId);
+            uint256 fee = (s.amount * feeBps) / 10000;
             uint256 childSpend = s.amount - remainingBudget[shakeId];
             uint256 workerNet = s.amount - childSpend - fee;
 
@@ -234,6 +284,9 @@ contract ShakeEscrow is ReentrancyGuard {
         }
 
         emit DisputeResolved(shakeId, workerWins);
+
+        // Unfreeze parent chain if subtree is now clean
+        _unfreezeParentChain(shakeId);
     }
 
     /// @notice Refund if deadline passes without acceptance or delivery
@@ -278,13 +331,67 @@ contract ShakeEscrow is ReentrancyGuard {
             status: ShakeStatus.Pending,
             taskHash: taskHash,
             deliveryHash: bytes32(0),
-            isChildShake: true
+            isChildShake: true,
+            disputeFrozenUntil: 0
         });
 
         // No new USDC transfer needed — funds already in contract from parent
         childShakes[parentShakeId].push(childId);
         emit ChildShakeCreated(parentShakeId, childId, amount);
         emit ShakeCreated(childId, msg.sender, amount, taskHash);
+    }
+
+    // --- Dispute Cascade Internals ---
+
+    /// @notice Recursively check that no descendant is in Disputed status
+    function _isSubtreeClean(uint256 shakeId) internal view returns (bool) {
+        uint256[] storage children = childShakes[shakeId];
+        for (uint256 i = 0; i < children.length; i++) {
+            uint256 childId = children[i];
+            if (shakes[childId].status == ShakeStatus.Disputed) {
+                return false;
+            }
+            if (!_isSubtreeClean(childId)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// @notice Walk up the parent chain and freeze dispute windows
+    function _freezeParentChain(uint256 childShakeId) internal {
+        Shake storage child = shakes[childShakeId];
+        if (!child.isChildShake) return;
+
+        uint256 parentId = child.parentShakeId;
+        // Walk up the chain — freeze any ancestor whose window hasn't finalized
+        while (true) {
+            Shake storage parent = shakes[parentId];
+            // Freeze: set disputeFrozenUntil to max so window cannot expire
+            if (parent.status == ShakeStatus.Delivered || parent.status == ShakeStatus.Active) {
+                parent.disputeFrozenUntil = type(uint48).max;
+                emit ParentFrozen(parentId, childShakeId);
+            }
+            if (!parent.isChildShake) break;
+            parentId = parent.parentShakeId;
+        }
+    }
+
+    /// @notice Walk up the parent chain and unfreeze if subtree is clean
+    function _unfreezeParentChain(uint256 childShakeId) internal {
+        Shake storage child = shakes[childShakeId];
+        if (!child.isChildShake) return;
+
+        uint256 parentId = child.parentShakeId;
+        while (true) {
+            Shake storage parent = shakes[parentId];
+            if (parent.disputeFrozenUntil > 0 && _isSubtreeClean(parentId)) {
+                parent.disputeFrozenUntil = 0;
+                emit ParentUnfrozen(parentId);
+            }
+            if (!parent.isChildShake) break;
+            parentId = parent.parentShakeId;
+        }
     }
 
     // --- View Functions ---

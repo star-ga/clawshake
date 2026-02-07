@@ -1,0 +1,17 @@
+{
+  "name": "clawshake-x402",
+  "version": "1.0.0",
+  "description": "x402 HTTP payment endpoint for Clawshake escrow protocol",
+  "main": "x402.js",
+  "scripts": {
+    "start": "node x402.js",
+    "test": "npx hardhat test x402.test.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "ethers": "^6.13.0",
+    "dotenv": "^16.4.0"
+  },
+  "author": "STARGA Inc",
+  "license": "Apache-2.0"
+}

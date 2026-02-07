@@ -313,6 +313,313 @@ describe("ShakeEscrow", function () {
     });
   });
 
+  describe("Dispute Cascade", function () {
+    it("prevents parent release when grandchild is disputed", async function () {
+      // Fund sub-worker
+      await usdc.faucet(subWorker.address, 5000_000000);
+
+      // Root: requester -> worker (500 USDC)
+      await escrow.connect(requester).createShake(AMOUNT, 86400, ethers.id("root task"));
+      await escrow.connect(worker).acceptShake(0);
+
+      // Worker hires sub-worker (200 USDC)
+      await escrow.connect(worker).createChildShake(0, 200_000000, 86400, ethers.id("child task"));
+      await escrow.connect(subWorker).acceptShake(1);
+
+      // Sub-worker delivers child, then dispute it
+      await escrow.connect(subWorker).deliverShake(1, ethers.id("child proof"));
+      await escrow.connect(worker).disputeShake(1); // worker is requester of child
+
+      // Worker delivers parent
+      await escrow.connect(worker).deliverShake(0, ethers.id("parent proof"));
+
+      // Parent release should fail — grandchild is disputed (subtree not clean)
+      await expect(
+        escrow.connect(requester).releaseShake(0)
+      ).to.be.revertedWithCustomError(escrow, "SubtreeNotClean");
+    });
+
+    it("freezes parent dispute window when child is disputed", async function () {
+      await usdc.faucet(subWorker.address, 5000_000000);
+
+      // Root: requester -> worker
+      await escrow.connect(requester).createShake(AMOUNT, 86400, ethers.id("root"));
+      await escrow.connect(worker).acceptShake(0);
+
+      // Worker hires sub-worker
+      await escrow.connect(worker).createChildShake(0, 200_000000, 86400, ethers.id("child"));
+      await escrow.connect(subWorker).acceptShake(1);
+
+      // Both deliver
+      await escrow.connect(subWorker).deliverShake(1, ethers.id("proof1"));
+      await escrow.connect(worker).deliverShake(0, ethers.id("proof0"));
+
+      // Dispute child — should freeze parent
+      await escrow.connect(worker).disputeShake(1);
+
+      // Verify parent is frozen
+      const parentShake = await escrow.getShake(0);
+      expect(parentShake.disputeFrozenUntil).to.be.greaterThan(0);
+
+      // Fast forward past normal dispute window
+      await ethers.provider.send("evm_increaseTime", [48 * 3600 + 1]);
+      await ethers.provider.send("evm_mine");
+
+      // Parent release should still fail — frozen due to child dispute
+      await expect(
+        escrow.connect(outsider).releaseShake(0)
+      ).to.be.revertedWithCustomError(escrow, "SubtreeNotClean");
+    });
+
+    it("unfreezes parent after child dispute resolves", async function () {
+      await usdc.faucet(subWorker.address, 5000_000000);
+
+      // Root: requester -> worker
+      await escrow.connect(requester).createShake(AMOUNT, 86400, ethers.id("root"));
+      await escrow.connect(worker).acceptShake(0);
+
+      // Worker hires sub-worker
+      await escrow.connect(worker).createChildShake(0, 200_000000, 86400, ethers.id("child"));
+      await escrow.connect(subWorker).acceptShake(1);
+
+      // Both deliver
+      await escrow.connect(subWorker).deliverShake(1, ethers.id("proof1"));
+      await escrow.connect(worker).deliverShake(0, ethers.id("proof0"));
+
+      // Dispute child — freezes parent
+      await escrow.connect(worker).disputeShake(1);
+      expect((await escrow.getShake(0)).disputeFrozenUntil).to.be.greaterThan(0);
+
+      // Resolve dispute — unfreezes parent
+      await escrow.connect(deployer).resolveDispute(1, true);
+      expect((await escrow.getShake(0)).disputeFrozenUntil).to.equal(0);
+
+      // Now parent can be released by requester
+      await escrow.connect(requester).releaseShake(0);
+      expect((await escrow.getShake(0)).status).to.equal(3); // Released
+    });
+
+    it("handles dispute cascade 3 levels deep", async function () {
+      const [,,,,, agent3] = await ethers.getSigners();
+      await usdc.faucet(subWorker.address, 5000_000000);
+      await usdc.connect(subWorker).approve(await escrow.getAddress(), ethers.MaxUint256);
+      await registry.connect(agent3).register("Agent3", ["testing"]);
+
+      // Level 0: requester -> worker (500 USDC)
+      await escrow.connect(requester).createShake(AMOUNT, 86400, ethers.id("L0"));
+      await escrow.connect(worker).acceptShake(0);
+
+      // Level 1: worker -> subWorker (200 USDC)
+      await escrow.connect(worker).createChildShake(0, 200_000000, 86400, ethers.id("L1"));
+      await escrow.connect(subWorker).acceptShake(1);
+
+      // Level 2: subWorker -> agent3 (50 USDC)
+      await escrow.connect(subWorker).createChildShake(1, 50_000000, 86400, ethers.id("L2"));
+      await escrow.connect(agent3).acceptShake(2);
+
+      // All deliver
+      await escrow.connect(agent3).deliverShake(2, ethers.id("proof2"));
+      await escrow.connect(subWorker).deliverShake(1, ethers.id("proof1"));
+      await escrow.connect(worker).deliverShake(0, ethers.id("proof0"));
+
+      // Dispute at deepest level (subWorker disputes agent3's work)
+      await escrow.connect(subWorker).disputeShake(2);
+
+      // Both ancestors should be frozen
+      expect((await escrow.getShake(0)).disputeFrozenUntil).to.be.greaterThan(0);
+      expect((await escrow.getShake(1)).disputeFrozenUntil).to.be.greaterThan(0);
+
+      // Neither parent can release
+      await expect(
+        escrow.connect(requester).releaseShake(0)
+      ).to.be.revertedWithCustomError(escrow, "SubtreeNotClean");
+
+      await expect(
+        escrow.connect(worker).releaseShake(1)
+      ).to.be.revertedWithCustomError(escrow, "SubtreeNotClean");
+
+      // Resolve deep dispute
+      await escrow.connect(deployer).resolveDispute(2, true);
+
+      // Both ancestors should be unfrozen
+      expect((await escrow.getShake(0)).disputeFrozenUntil).to.equal(0);
+      expect((await escrow.getShake(1)).disputeFrozenUntil).to.equal(0);
+
+      // Now settle bottom-up
+      await escrow.connect(worker).releaseShake(1);
+      await escrow.connect(requester).releaseShake(0);
+
+      expect((await escrow.getShake(0)).status).to.equal(3);
+      expect((await escrow.getShake(1)).status).to.equal(3);
+      expect((await escrow.getShake(2)).status).to.equal(3);
+    });
+
+    it("allows parent release after all descendant disputes resolved", async function () {
+      await usdc.faucet(subWorker.address, 5000_000000);
+      await registry.connect(outsider).register("Outsider-1", ["general"]);
+      await usdc.connect(outsider).approve(await escrow.getAddress(), ethers.MaxUint256);
+
+      // Root: requester -> worker
+      await escrow.connect(requester).createShake(AMOUNT, 86400, ethers.id("root"));
+      await escrow.connect(worker).acceptShake(0);
+
+      // Two children
+      await escrow.connect(worker).createChildShake(0, 150_000000, 86400, ethers.id("c1"));
+      await escrow.connect(worker).createChildShake(0, 100_000000, 86400, ethers.id("c2"));
+      await escrow.connect(subWorker).acceptShake(1);
+      await escrow.connect(outsider).acceptShake(2);
+
+      // Both deliver
+      await escrow.connect(subWorker).deliverShake(1, ethers.id("p1"));
+      await escrow.connect(outsider).deliverShake(2, ethers.id("p2"));
+      await escrow.connect(worker).deliverShake(0, ethers.id("p0"));
+
+      // Dispute both children
+      await escrow.connect(worker).disputeShake(1);
+      await escrow.connect(worker).disputeShake(2);
+
+      // Resolve first child
+      await escrow.connect(deployer).resolveDispute(1, true);
+
+      // Parent still frozen — second child still disputed
+      expect((await escrow.getShake(0)).disputeFrozenUntil).to.be.greaterThan(0);
+      await expect(
+        escrow.connect(requester).releaseShake(0)
+      ).to.be.revertedWithCustomError(escrow, "SubtreeNotClean");
+
+      // Resolve second child
+      await escrow.connect(deployer).resolveDispute(2, false);
+
+      // Parent now unfrozen
+      expect((await escrow.getShake(0)).disputeFrozenUntil).to.equal(0);
+
+      // Release parent
+      await escrow.connect(requester).releaseShake(0);
+      expect((await escrow.getShake(0)).status).to.equal(3);
+    });
+  });
+
+  describe("FeeOracle (Dynamic Fees)", function () {
+    let oracle;
+
+    beforeEach(async function () {
+      const FeeOracle = await ethers.getContractFactory("FeeOracle");
+      oracle = await FeeOracle.deploy(deployer.address);
+    });
+
+    it("returns higher fee for deeper chains", async function () {
+      const feeDepth0 = await oracle.getAdjustedFee(AMOUNT, 0);
+      const feeDepth2 = await oracle.getAdjustedFee(AMOUNT, 2);
+      const feeDepth5 = await oracle.getAdjustedFee(AMOUNT, 5);
+
+      expect(feeDepth0).to.equal(250); // base: 250 bps
+      expect(feeDepth2).to.equal(300); // 250 + 2*25
+      expect(feeDepth5).to.equal(375); // 250 + 5*25
+    });
+
+    it("treasury can update base fee", async function () {
+      await oracle.connect(deployer).updateFee(300);
+      expect(await oracle.baseFeeBps()).to.equal(300);
+
+      // Non-treasury cannot update
+      await expect(
+        oracle.connect(requester).updateFee(100)
+      ).to.be.revertedWithCustomError(oracle, "NotTreasury");
+    });
+
+    it("ShakeEscrow uses FeeOracle for dynamic fees", async function () {
+      const FeeOracle = await ethers.getContractFactory("FeeOracle");
+      oracle = await FeeOracle.deploy(deployer.address);
+
+      // Set oracle on escrow
+      await escrow.connect(deployer).setFeeOracle(await oracle.getAddress());
+
+      // Create root shake and release
+      await escrow.connect(requester).createShake(AMOUNT, 86400, ethers.id("oracle test"));
+      await escrow.connect(worker).acceptShake(0);
+      await escrow.connect(worker).deliverShake(0, ethers.id("proof"));
+
+      const treasuryBefore = await usdc.balanceOf(deployer.address);
+      await escrow.connect(requester).releaseShake(0);
+      const treasuryAfter = await usdc.balanceOf(deployer.address);
+
+      // At depth 0, fee should be 250 bps (same as static default)
+      const expectedFee = BigInt(AMOUNT) * 250n / 10000n;
+      expect(treasuryAfter - treasuryBefore).to.equal(expectedFee);
+    });
+  });
+
+  describe("AgentDelegate (Session Keys)", function () {
+    let delegate;
+
+    beforeEach(async function () {
+      const AgentDelegate = await ethers.getContractFactory("AgentDelegate");
+      delegate = await AgentDelegate.deploy(await escrow.getAddress());
+
+      // Requester approves delegate contract to pull USDC
+      await usdc.connect(requester).approve(await delegate.getAddress(), ethers.MaxUint256);
+    });
+
+    it("creates shake via delegate session", async function () {
+      // Requester creates session for worker as delegate
+      await delegate.connect(requester).createSession(worker.address, 1000_000000, 86400);
+
+      // Worker (delegate) creates shake on behalf of requester
+      const taskHash = ethers.id("delegated task");
+      await delegate.connect(worker).createShakeAsDelegate(0, AMOUNT, 86400, taskHash);
+
+      // Verify shake was created (on escrow, requester is the delegate contract)
+      const shake = await escrow.getShake(0);
+      expect(shake.amount).to.equal(AMOUNT);
+
+      // Verify session spent tracking
+      const session = await delegate.getSession(0);
+      expect(session.spent).to.equal(AMOUNT);
+    });
+
+    it("reverts when delegate exceeds maxSpend", async function () {
+      await delegate.connect(requester).createSession(worker.address, 100_000000, 86400);
+
+      await expect(
+        delegate.connect(worker).createShakeAsDelegate(0, 200_000000, 86400, ethers.id("too much"))
+      ).to.be.revertedWithCustomError(delegate, "ExceedsSessionBudget");
+    });
+
+    it("reverts when session expired", async function () {
+      await delegate.connect(requester).createSession(worker.address, 1000_000000, 1); // 1 second
+
+      await ethers.provider.send("evm_increaseTime", [2]);
+      await ethers.provider.send("evm_mine");
+
+      await expect(
+        delegate.connect(worker).createShakeAsDelegate(0, AMOUNT, 86400, ethers.id("expired"))
+      ).to.be.revertedWithCustomError(delegate, "SessionExpired");
+    });
+
+    it("owner can revoke session mid-flight", async function () {
+      await delegate.connect(requester).createSession(worker.address, 1000_000000, 86400);
+
+      // Use some budget
+      await delegate.connect(worker).createShakeAsDelegate(0, 100_000000, 86400, ethers.id("t1"));
+
+      // Requester revokes
+      await delegate.connect(requester).revokeSession(0);
+
+      // Delegate can no longer create shakes
+      await expect(
+        delegate.connect(worker).createShakeAsDelegate(0, 100_000000, 86400, ethers.id("t2"))
+      ).to.be.revertedWithCustomError(delegate, "SessionNotActive");
+    });
+
+    it("delegate cannot revoke own session", async function () {
+      await delegate.connect(requester).createSession(worker.address, 1000_000000, 86400);
+
+      await expect(
+        delegate.connect(worker).revokeSession(0)
+      ).to.be.revertedWithCustomError(delegate, "NotSessionOwner");
+    });
+  });
+
   describe("AgentRegistry", function () {
     it("should register agents with SBT passports", async function () {
       const passport = await registry.getPassport(worker.address);

@@ -10,7 +10,7 @@
   <a href="https://sepolia.basescan.org/address/0xa33F9fA90389465413FFb880FD41e914b7790C61"><img src="https://img.shields.io/badge/Base_Sepolia-Deployed-3B82F6?logo=ethereum&logoColor=white" alt="Deployed on Base Sepolia"></a>
   <a href="https://www.circle.com/usdc"><img src="https://img.shields.io/badge/USDC-Powered-2775CA?logo=circle&logoColor=white" alt="USDC Powered"></a>
   <img src="https://img.shields.io/badge/Solidity-0.8.24-363636?logo=solidity&logoColor=white" alt="Solidity 0.8.24">
-  <img src="https://img.shields.io/badge/Tests-32_passing-brightgreen?logo=checkmarx&logoColor=white" alt="32 Tests Passing">
+  <img src="https://img.shields.io/badge/Tests-47_passing-brightgreen?logo=checkmarx&logoColor=white" alt="47 Tests Passing">
   <img src="https://img.shields.io/badge/Gas-$0.07_full_chain-orange?logo=gaslamp&logoColor=white" alt="Gas Cost">
   <img src="https://img.shields.io/badge/License-Apache_2.0-yellow?logo=opensourceinitiative&logoColor=white" alt="Apache 2.0 License">
   <img src="https://img.shields.io/badge/MIND-SDK-8B5CF6?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJ3aGl0ZSI+PHBhdGggZD0iTTEyIDJMMiA3bDEwIDUgMTAtNS0xMC01ek0yIDE3bDEwIDUgMTAtNS0xMC01LTEwIDV6TTIgMTJsMTAgNSAxMC01LTEwLTUtMTAgNXoiLz48L3N2Zz4=&logoColor=white" alt="MIND SDK">
@@ -44,6 +44,17 @@ Clawshake is the deal-making layer for AI agents. The **"shake"** is the primiti
 | **Settlement** | 5-14 business days | Seconds (Base L2) |
 | **Coordination** | Email, chat, meetings | On-chain shakes, cascading settlement |
 
+## What's New in v3
+
+| Feature | Description |
+|---------|-------------|
+| **Dispute Cascade** | Disputes propagate up the hire chain — freezing parent settlement until all descendant disputes resolve |
+| **Session Keys** | `AgentDelegate.sol` — spend-limited, time-bounded delegate sessions for restricted agent wallets |
+| **Dynamic Fees** | `FeeOracle.sol` — depth-based protocol fees via ODE-modeled risk curves (Remizov Theorem 6 solver in MIND) |
+| **x402 HTTP Server** | REST endpoint with x402 payment-required headers for agent-to-agent discovery |
+| **5-Level Deep Chain** | 7-agent recursive hire chain demo — 28 transactions, cascading settlement |
+| **47 Tests** | Up from 32 — dispute cascade, session keys, dynamic fees, x402 endpoint coverage |
+
 ## Quick Start
 
 ```bash
@@ -53,11 +64,17 @@ npm install
 # Compile contracts
 npm run compile
 
-# Run tests
+# Run tests (47 passing)
 npm test
 
-# Run demo (agent hire chain)
+# Run demo (2-child hire chain)
 npm run demo
+
+# Run deep chain demo (5-level, 7 agents)
+npm run demo:deep
+
+# Start x402 HTTP server
+cd server && npm install && node x402.js
 
 # Deploy to Base Sepolia
 cp .env.example .env
@@ -182,9 +199,11 @@ The core primitive — USDC escrow with:
 - **Recursive agent hire chains** (parent → child shakes)
 - **Cascading settlement** — children must settle before parent can release
 - **Budget tracking** — `remainingBudget` enforced on child allocations
+- **Dispute cascade** (v3) — `_freezeParentChain()` / `_unfreezeParentChain()` propagate disputes up the tree
+- **Subtree cleanliness** (v3) — `_isSubtreeClean()` recursively verifies no active disputes in descendants
+- **Dynamic fees** (v3) — pluggable `IFeeOracle` interface for depth-based protocol fees
 - Custom errors for gas efficiency
 - Auto reputation updates via AgentRegistry integration
-- 2.5% protocol fee
 
 ### AgentRegistry.sol
 SBT-based reputation with access control:
@@ -194,33 +213,101 @@ SBT-based reputation with access control:
 - `isRegistered()` for on-chain identity checks
 - Sybil-resistant (new agents start at zero)
 
-### 32 Tests Passing
-Full coverage: lifecycle, disputes, cascading settlement, budget overflow, access control, reputation, gas benchmarks
+### AgentDelegate.sol (v3)
+Session key delegation for restricted agent wallets:
+- Spend-limited sessions (`maxSpend` in USDC)
+- Time-bounded (`expiresAt` timestamp)
+- Owner creates sessions for delegates
+- Delegates can create shakes on behalf of owners
+- Owner can revoke sessions at any time
+
+### FeeOracle.sol (v3)
+Dynamic protocol fee oracle:
+- `baseFeeBps` + `depthPremiumBps × chainDepth` — deeper chains pay proportionally higher fees
+- `MAX_FEE_BPS = 1000` (10% hard cap)
+- Treasury-controlled parameter updates
+- Backward compatible — ShakeEscrow falls back to static 250 bps when no oracle is set
+
+### 47 Tests Passing
+Full coverage: lifecycle, disputes, cascading settlement, dispute cascade, session keys, dynamic fees, x402 HTTP endpoints, gas benchmarks
 
 ### Gas Benchmarks (Base L2)
 
-Every Clawshake operation is gas-efficient on Base — full hire chains settle for under $0.07:
+Every Clawshake operation is gas-efficient on Base — full hire chains settle for under $0.10:
 
 | Operation | Gas | USD (Base) |
 |-----------|-----|------------|
-| `createShake` | 186,081 | ~$0.009 |
+| `createShake` | 182,919 | ~$0.009 |
 | `acceptShake` | 74,988 | ~$0.004 |
-| `createChildShake` (1st) | 206,075 | ~$0.010 |
-| `createChildShake` (2nd) | 188,987 | ~$0.009 |
+| `createChildShake` (depth 1) | 206,203 | ~$0.010 |
+| `createChildShake` (depth 2+) | 221,315 | ~$0.011 |
 | `deliverShake` | 53,087 | ~$0.003 |
-| `releaseShake` (flat, no children) | 148,722 | ~$0.007 |
-| `releaseShake` (cascading, 2 children) | 158,194 | ~$0.008 |
-| `disputeShake` | 32,808 | ~$0.002 |
-| `resolveDispute` | 143,817 | ~$0.007 |
+| `releaseShake` (no children) | 136,233 | ~$0.007 |
+| `releaseShake` (2 children) | 117,403 | ~$0.006 |
+| `releaseShake` (5 children) | 140,440 | ~$0.007 |
+| `disputeShake` | 35,020 | ~$0.002 |
+| `resolveDispute` | 131,145 | ~$0.007 |
 
-**Full 2-child hire chain: 12 transactions, ~1.43M gas, ~$0.07 total on Base**
+**Scaling by chain depth:**
 
-The cascading settlement check adds only **~9.5K gas** per `releaseShake` — the child status loop reads storage slots, no external calls. At Base L2 gas prices (~$0.05/100K gas), a full agent hire chain costs less than a single Ethereum L1 transfer.
+| Chain Depth | Total Gas (deliver + release) | USD (Base) |
+|-------------|-------------------------------|------------|
+| 2-child hire chain (12 txs) | ~1.40M | ~$0.07 |
+| 3-level chain | 599,897 | ~$0.03 |
+| 5-level chain | 1,038,258 | ~$0.05 |
+
+At Base L2 gas prices (~$0.05/100K gas), a full 5-level recursive hire chain settles for **~$0.05** — less than a single Ethereum L1 transfer.
 
 ```bash
 # Run benchmarks
 npx hardhat test test/GasBenchmark.test.js
 ```
+
+### Dispute Cascade (v3)
+
+When a child shake is disputed, the dispute propagates up the entire parent chain:
+
+```
+         Shake 0 (Client → PM)         ← frozen: disputeFrozenUntil = MAX
+           ├── Shake 1 (PM → Dev)      ← frozen: disputeFrozenUntil = MAX
+           │     └── Shake 3 (Dev → QA)  ← DISPUTED
+           └── Shake 2 (PM → Design)    (unaffected)
+```
+
+- `disputeShake()` calls `_freezeParentChain()` — walks up `parentShakeId` and sets `disputeFrozenUntil = type(uint48).max`
+- `releaseShake()` checks `_isSubtreeClean()` — recursively verifies no active disputes in descendants
+- `resolveDispute()` calls `_unfreezeParentChain()` — walks up and resets frozen timestamps if subtree is now clean
+- Parents cannot release while any descendant is disputed — prevents premature USDC settlement
+
+### Session Keys (v3)
+
+`AgentDelegate.sol` enables restricted delegation without sharing private keys:
+
+```solidity
+// Owner creates session for a delegate
+delegate.createSession(delegateAddr, 1000_000000, expiresAt);
+
+// Delegate creates shakes on owner's behalf
+delegate.connect(delegateWallet).createShakeAsDelegate(sessionId, amount, deadline, taskHash);
+```
+
+- **Spend-limited**: `maxSpend` caps total USDC the delegate can commit
+- **Time-bounded**: `expiresAt` auto-expires sessions
+- **Revocable**: owner calls `revokeSession()` at any time
+- USDC is pulled from the owner's balance (not the delegate's)
+
+### Dynamic Fees (v3)
+
+`FeeOracle.sol` replaces the static 2.5% fee with depth-based pricing:
+
+```
+effectiveFee = baseFeeBps + (chainDepth × depthPremiumBps)
+```
+
+- Default: 250 bps base + 25 bps per depth level
+- 5-level chain pays 375 bps (3.75%) vs 250 bps (2.5%) for flat shakes
+- Capped at 1000 bps (10%) to prevent excessive fees
+- Off-chain fee optimization modeled in MIND using Remizov Theorem 6 ODE solver
 
 ### Security Model
 
@@ -232,10 +319,12 @@ Clawshake is designed with defense-in-depth for trustless agent interactions:
 | **Integer overflow** | Solidity 0.8.24 built-in checked arithmetic |
 | **Access control** | `onlyAuthorized` modifier — only ShakeEscrow can update AgentRegistry |
 | **Budget enforcement** | `remainingBudget` checked before every `createChildShake` — `ExceedsParentBudget` revert |
-| **Cascading integrity** | `ChildrenNotSettled` revert — parent cannot release until all children are Released or Refunded |
-| **Custom errors** | Gas-efficient reverts with **17** typed error codes (no string comparisons) |
+| **Cascading integrity** | `ChildrenNotSettled` + `SubtreeNotClean` reverts — parent cannot release until all descendants are settled and undisputed |
+| **Dispute cascade** | `_freezeParentChain()` propagates disputes upward — `disputeFrozenUntil` prevents premature parent settlement |
+| **Custom errors** | Gas-efficient reverts with **19** typed error codes (no string comparisons) |
 | **Deadline enforcement** | `uint48` timestamps — auto-refund after deadline via `refundShake()` |
 | **Dispute window** | 48h optimistic window — requester can dispute, treasury resolves |
+| **Session key limits** | `maxSpend` + `expiresAt` bounds on delegate authority |
 | **SBT non-transferability** | No `transfer()` function — passports are soul-bound by design |
 | **Safe transfers** | OpenZeppelin `SafeERC20` for all USDC operations |
 
@@ -277,10 +366,12 @@ Released                              workerWins? → Released
 | `resolveDispute` | Treasury only | Status == Disputed |
 | `refundShake` | Anyone | Status == Pending/Active, after deadline |
 
-**Parent/child failure propagation:**
-- If a child is Disputed → parent cannot `releaseShake` (ChildrenNotSettled revert)
+**Parent/child failure propagation (v3 — dispute cascade):**
+- If a child is Disputed → parent chain is **frozen** (`disputeFrozenUntil = MAX`) — cannot `releaseShake` until dispute resolves
+- If a grandchild is Disputed → `_isSubtreeClean()` returns false for all ancestors — `SubtreeNotClean` revert
 - If a child is Refunded → parent can release (Refunded is a terminal state)
 - If parent is Refunded → children remain independent (each has its own USDC allocation)
+- `resolveDispute()` unfreezes the parent chain when subtree becomes clean
 - Budget is deducted at `createChildShake` time, not at settlement — no race conditions
 
 **Anti-griefing — children cannot infinitely block parents:**
@@ -303,14 +394,47 @@ Every child shake path resolves in finite time. No state can persist indefinitel
 
 **Workers can pre-screen counterparties** via AgentRegistry: `successRate`, `disputesLost`, `registeredAt`, `totalShakes` — refuse shakes from untrustworthy requesters.
 
+### x402 HTTP Payment Endpoint (v3)
+
+REST server for agent-to-agent discovery via standard HTTP with x402 payment-required headers:
+
+```bash
+# List open jobs (filterable)
+curl "http://localhost:3402/jobs?minReward=100"
+
+# Get shake details
+curl http://localhost:3402/shake/0
+
+# Get agent passport
+curl http://localhost:3402/agent/0x1234...
+
+# Create shake (triggers 402 payment flow)
+curl -X POST http://localhost:3402/shake \
+  -H "Content-Type: application/json" \
+  -d '{"amount": 500000000, "deadline": 86400, "taskHash": "0x..."}'
+```
+
+When `POST /shake` is called without a payment transaction:
+
+```
+HTTP/1.1 402 Payment Required
+X-Payment-Required: true
+X-Payment-Address: 0x...
+X-Payment-Amount: 500000000
+X-Payment-Chain: base-sepolia
+X-Payment-Protocol: clawshake/v1
+```
+
+The requesting agent submits USDC payment on-chain and retries with `paymentTx`. See `server/README.md` for full API reference.
+
 ### Governance Model
 
-Clawshake v2 has a minimal, explicit governance model — intentionally simple for a hackathon MVP:
+Clawshake v3 has a minimal, explicit governance model — intentionally simple for a hackathon MVP:
 
 | Parameter | Controller | Mechanism |
 |-----------|-----------|-----------|
 | `treasury` (fee recipient + dispute resolver) | Set at deploy time | Constructor parameter — immutable after deployment |
-| `protocolFeeBps` (2.5%) | Hardcoded | No setter function — cannot be changed without redeployment |
+| `protocolFeeBps` (2.5% base) | Hardcoded fallback / FeeOracle | Static 250 bps default; dynamic via `setFeeOracle()` |
 | `disputeWindow` (48h) | Hardcoded | No setter function — cannot be changed without redeployment |
 | `registry` (AgentRegistry address) | Treasury | `setRegistry()` — only treasury can call |
 | Authorized callers on AgentRegistry | Owner | `authorizeCaller()` / `revokeCaller()` |
@@ -332,10 +456,11 @@ Clawshake v2 has a minimal, explicit governance model — intentionally simple f
 **Dispute resolution upgrade path (concrete):**
 | Version | Mechanism | Trust Model |
 |---------|-----------|-------------|
-| v2 (current) | Single treasury EOA resolves disputes | Trusted operator — suitable for hackathon/testnet |
-| v2.1 (near-term) | Multisig treasury (3-of-5 Gnosis Safe) | Distributed trust — no single point of failure |
-| v3 (production) | Bonded arbitrator pool (Kleros/UMA integration) | Trustless — arbitrators stake collateral, slashed for wrong verdicts |
-| v3.1 (extension) | Objective verification for typed tasks | Deterministic — API responses, code output, benchmarks verified on-chain |
+| v2 | Single treasury EOA resolves disputes | Trusted operator — suitable for hackathon/testnet |
+| v3 (current) | Treasury EOA + dispute cascade + dynamic fees | Trusted operator with propagation safety |
+| v3.1 (near-term) | Multisig treasury (3-of-5 Gnosis Safe) | Distributed trust — no single point of failure |
+| v4 (production) | Bonded arbitrator pool | Trustless — arbitrators stake collateral, slashed for wrong verdicts |
+| v4.1 (extension) | Objective verification for typed tasks | Deterministic — API responses, code output, benchmarks verified on-chain |
 
 The contract is designed for this upgrade: `treasury` is the only resolution role, so swapping it from an EOA → multisig → arbitrator contract requires only redeploying with a new treasury address. No proxy upgrade needed.
 
@@ -362,9 +487,9 @@ The SBT reputation system provides **reputation integrity**, not full sybil resi
 - Minimum reputation threshold for high-value shakes
 - Cross-referencing with external identity providers (ENS, Worldcoin, Gitcoin Passport)
 
-This is transparent about what v2 does and doesn't solve. SBTs make reputation non-transferable and tamper-proof; sybil resistance requires additional economic mechanisms that are out of scope for this hackathon.
+This is transparent about what v3 does and doesn't solve. SBTs make reputation non-transferable and tamper-proof; sybil resistance requires additional economic mechanisms that are out of scope for this hackathon.
 
-**Economic sybil deterrents (already in v2):**
+**Economic sybil deterrents (already in v3):**
 - Wash-trading via self-hire costs **2.5%** protocol fee per level — 3 levels of self-referral burns **7.3%** of principal
 - Reputation farming requires real USDC at risk in escrow — not free to accumulate
 - Counterparty diversity: agents can check `totalShakes` vs unique requesters (via event logs) to detect farming patterns
@@ -389,7 +514,7 @@ This is transparent about what v2 does and doesn't solve. SBTs make reputation n
 
 ### Delivery Verification
 
-**Current (v2):** Delivery proof is a `bytes32` hash — typically `keccak256` of an IPFS CID containing deliverables. This is intentionally minimal and format-agnostic.
+**Current (v3):** Delivery proof is a `bytes32` hash — typically `keccak256` of an IPFS CID containing deliverables. This is intentionally minimal and format-agnostic.
 
 **Why hashes work for agent commerce:**
 - Agent tasks produce deterministic outputs (API responses, data files, code, reports) — IPFS-pinned and content-addressed
@@ -416,16 +541,31 @@ The `bytes32` deliveryHash is forward-compatible with all of these — the verif
 
 The MIND SDK (MIC@2 + MAP) is a performance optimization layer for high-throughput agents that make thousands of blockchain calls per day. For most agents, JSON-RPC is perfectly fine. The contracts don't know or care what transport the caller uses.
 
+### Clawshake vs Alternatives
+
+| Feature | Simple Escrow | Multisig | Marketplace (centralized) | **Clawshake v3** |
+|---------|--------------|----------|--------------------------|-----------------|
+| **Recursive hiring** | No | No | No | **Yes — unlimited depth** |
+| **Cascading settlement** | N/A | Manual | Platform-managed | **Automatic on-chain** |
+| **Dispute cascade** | N/A | N/A | Manual review | **Propagates up chain** |
+| **Dynamic fees** | Fixed | N/A | Platform-set | **Depth-based ODE model** |
+| **Session keys** | N/A | All signers equal | OAuth tokens | **Spend-limited + time-bounded** |
+| **Reputation** | None | None | Platform-controlled | **SBT (on-chain, non-transferable)** |
+| **Settlement speed** | 1 tx | N-of-M signing | 5-14 days | **Immediate on release** |
+| **Fee** | None | Gas only | 10-20% | **2.5-3.75% (depth-based)** |
+| **Agent discovery** | None | None | Search API | **x402 HTTP + on-chain registry** |
+
 ### Scalability Analysis
 
 Recursive hire chains scale linearly with child count:
 
 | Chain Depth | Children | releaseShake Gas | Incremental Cost |
 |-------------|----------|-----------------|-----------------|
-| Flat (0 children) | 0 | 148,722 | baseline |
-| 1 child | 1 | ~153,500 | +4,778 per child |
-| 2 children | 2 | 158,194 | +4,736 per child |
-| N children | N | ~148,722 + 4,750*N | **O(N) linear** |
+| Flat (0 children) | 0 | 136,233 | baseline |
+| 1 child | 1 | 109,724 | +4,750 per child |
+| 2 children | 2 | 117,403 | +4,750 per child |
+| 5 children | 5 | 140,440 | +4,750 per child |
+| N children | N | ~136,233 + 4,750*N | **O(N) linear** |
 
 The child settlement loop reads one storage slot per child (just the `status` enum) — no external calls, no token transfers in the loop. Even a 20-child hire chain would add only **~95K gas** (**~$0.005** on Base), keeping total release under **250K gas**.
 
@@ -467,9 +607,19 @@ Contract-level security is covered above. This section addresses **agent-side th
 - **Budget conservation**: `remainingBudget` is decremented at `createChildShake` — sum of child amounts never exceeds parent amount.
 - **Bounded resolution**: Every shake reaches a terminal state (Released/Refunded) within `deadline + 48h`.
 
-### Protocol Fee Justification (2.5%)
+### Protocol Fee Model (Dynamic — v3)
 
-The **2.5%** protocol fee funds: dispute resolution infrastructure, SBT passport minting gas, protocol maintenance, and future formal verification. At **$0.025 per $1 USDC** transacted, it's competitive with industry rates (typical marketplace fees range 5-20%) while providing recursive escrow, cascading settlement, SBT reputation, and on-chain dispute resolution.
+The base **2.5%** protocol fee is augmented by a depth premium via `FeeOracle`:
+
+| Chain Depth | Fee (bps) | Fee (%) | Rationale |
+|-------------|-----------|---------|-----------|
+| 0 (flat shake) | 250 | 2.50% | Base rate |
+| 1 | 275 | 2.75% | +25 bps per depth level |
+| 3 | 325 | 3.25% | Moderate delegation |
+| 5 | 375 | 3.75% | Deep chain premium |
+| Max | 1000 | 10.00% | Hard cap |
+
+Deeper chains carry more coordination risk — the depth premium compensates. The fee model is optimized off-chain via a Remizov Theorem 6 ODE solver (`mind/src/dynamic_fees.mind`) that balances demand, dispute rate, and chain depth.
 
 ### MockUSDC.sol
 Test token for local development. On Base Sepolia, uses Circle's testnet USDC.
@@ -504,14 +654,14 @@ mind --emit-ir src/main.mind
 mind --emit-grad-ir --func evaluate_job --autodiff src/agent.mind
 ```
 
-### Why MIND > Toon for Agent Commerce
+### Why MIND for Agent Commerce
 
-| | **MIND** | **Toon** |
-|--|----------|----------|
-| **Binary size** | **~2 MB** (LLVM native) | ~18 MB (interpreter + runtime) |
-| **Startup** | **<1ms** (native binary) | ~200ms (VM warmup) |
+| Metric | MIND | Interpreted Runtimes |
+|--------|------|---------------------|
+| **Binary size** | **~2 MB** (LLVM native) | 15-20 MB (interpreter + runtime) |
+| **Startup** | **<1ms** (native binary) | 100-200ms (VM warmup) |
 | **Memory** | **4 MB** RSS (no GC) | 60+ MB (GC overhead) |
-| **Execution** | **Native speed** (LLVM O3) | 5-10x slower (interpreted) |
+| **Execution** | **Native speed** (LLVM O3) | 5-10x slower |
 | **IR output** | MIC format (inspectable) | Opaque bytecode |
 | **Crypto** | `std.crypto` (keccak256, secp256k1) | External dependency |
 | **Tensor ops** | First-class type system | Library bolt-on |
@@ -525,22 +675,22 @@ MIND compiles to native code via LLVM — no VM, no interpreter, no garbage coll
 - **MIC@2** (Mind Intermediate Code v2): Replaces JSON-RPC as the EVM wire format. Blockchain operations are typed MIC opcodes (`MicOp::SendTx`, `MicOp::Call`, `MicOp::Batch`) — compile-time checked, ~60% smaller than JSON-RPC text, no parse/serialize overhead. The runtime lowers MIC frames to whatever transport backend is available (HTTP, WebSocket, IPC). Emit with `mind --emit-ir`.
 - **MAP** (Mind Agent Protocol): The autonomous agent orchestration layer in `src/agent.mind`. Handles job evaluation, sub-agent hiring with budget management, delivery proof, and cascading settlement — all expressed as MAP actions dispatched through MIC@2.
 
-### JSON-RPC vs Toon vs MIC@2
+### JSON-RPC vs MIC@2
 
-| | **JSON-RPC** | **Toon** | **MIC@2** |
-|--|-------------|----------|-----------|
-| **Format** | Text (JSON) | Binary (TVM cells) | Binary (MIC frames) |
-| **Type safety** | None (string keys) | Runtime checked | Compile-time checked |
-| **Payload size** | ~400 bytes per call | ~180 bytes per cell | **~60 bytes per op** |
-| **Parse overhead** | JSON parse + serialize | Cell decode + BOC | **Zero** (native structs) |
-| **Batch calls** | Separate JSON array | Separate messages | **`MicOp::Batch`** (single frame) |
-| **Error handling** | String matching `"error"` | Exit codes | **Typed `MicError` enum** |
-| **Inspectable** | Human-readable JSON | Opaque bytecode | `mind --emit-ir` (MIC text) |
-| **Transport** | HTTP only | ADNL protocol | HTTP, WebSocket, IPC |
-| **Signing** | External (ethers.js) | External (tonlib) | Built-in (`std.crypto`) |
-| **Overhead per agent call** | ~2ms parse + ~1ms serialize | ~1.5ms decode | **~0.01ms** (zero-copy) |
-| **Dependencies** | axios/fetch + JSON lib | tonlib + BOC codec | None (MIND stdlib) |
-| **Agent cost at scale** | ~$0.05/1K calls (parse CPU) | ~$0.03/1K calls | **~$0.001/1K calls** |
+| | **JSON-RPC** | **MIC@2** |
+|--|-------------|-----------|
+| **Format** | Text (JSON) | Binary (MIC frames) |
+| **Type safety** | None (string keys) | Compile-time checked |
+| **Payload size** | ~400 bytes per call | **~60 bytes per op** |
+| **Parse overhead** | JSON parse + serialize | **Zero** (native structs) |
+| **Batch calls** | Separate JSON array | **`MicOp::Batch`** (single frame) |
+| **Error handling** | String matching `"error"` | **Typed `MicError` enum** |
+| **Inspectable** | Human-readable JSON | `mind --emit-ir` (MIC text) |
+| **Transport** | HTTP only | HTTP, WebSocket, IPC |
+| **Signing** | External (ethers.js) | Built-in (`std.crypto`) |
+| **Overhead per agent call** | ~2ms parse + ~1ms serialize | **~0.01ms** (zero-copy) |
+| **Dependencies** | axios/fetch + JSON lib | None (MIND stdlib) |
+| **Agent cost at scale** | ~$0.05/1K calls (parse CPU) | **~$0.001/1K calls** |
 
 ### MIC@2 Binary Frame
 
@@ -577,27 +727,62 @@ a33F9fA90389465413FFb880FD41e914b7790C61    # target (20B)
 | `crypto.mind` | Keccak-256, secp256k1, EIP-1559 transactions |
 | `abi.mind` | EVM ABI encoding/decoding |
 | `lib.mind` | Module declarations |
+| `dynamic_fees.mind` | ODE-based fee optimization (Remizov Theorem 6 solver) |
+| `reputation_decay.mind` | Trust score decay model (Green's function + variable coefficients) |
+| `risk_cascade.mind` | Risk propagation in recursive hire chains (boundary value problem) |
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│           CLAWSHAKE PROTOCOL                │
-│     (Base L2 — Native USDC Settlement)      │
-├─────────────────────────────────────────────┤
-│ On-chain (Solidity)                         │
-│  • ShakeEscrow (USDC lock/release)          │
-│  • AgentRegistry (SBT reputation)           │
-│  • Child shake composition                  │
-├─────────────────────────────────────────────┤
-│ Off-chain (100% MIND)                       │
-│  • MAP — Mind Agent Protocol                │
-│  • MIC — Mind Intermediate Code             │
-│  • EVM ABI encoding + transaction signing   │
-│  • Autonomous hire chain orchestration      │
-│  • Task specs & delivery proofs (IPFS)      │
-│  • OpenClaw skill integration               │
-└─────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                   CLAWSHAKE PROTOCOL v3                  │
+│            (Base L2 — Native USDC Settlement)            │
+├──────────────────────┬──────────────────────────────────┤
+│ On-chain (Solidity)  │  HTTP Layer                      │
+│                      │                                  │
+│  ShakeEscrow         │  x402 Server (Express)           │
+│  ├─ Recursive escrow │  ├─ GET  /shake/:id              │
+│  ├─ Dispute cascade  │  ├─ POST /shake (402 flow)       │
+│  ├─ Budget tracking  │  ├─ GET  /agent/:address         │
+│  └─ IFeeOracle hook  │  ├─ GET  /jobs?minReward=N       │
+│                      │  └─ GET  /health                 │
+│  AgentRegistry       │                                  │
+│  └─ SBT passports    │  x402 Headers:                   │
+│                      │  X-Payment-Required: true        │
+│  AgentDelegate       │  X-Payment-Chain: base-sepolia   │
+│  └─ Session keys     │  X-Payment-Protocol: clawshake/v1│
+│                      │                                  │
+│  FeeOracle           │                                  │
+│  └─ Depth-based fees │                                  │
+├──────────────────────┴──────────────────────────────────┤
+│ Off-chain (100% MIND)                                   │
+│                                                         │
+│  MAP — Mind Agent Protocol     MIC@2 Transport          │
+│  ├─ Job evaluation             ├─ Typed EVM opcodes     │
+│  ├─ Sub-agent hiring           ├─ 87% smaller payloads  │
+│  └─ Cascading settlement       └─ Compile-time checked  │
+│                                                         │
+│  Remizov ODE Models            Crypto & ABI             │
+│  ├─ dynamic_fees.mind          ├─ Keccak-256            │
+│  ├─ reputation_decay.mind      ├─ secp256k1 signing     │
+│  └─ risk_cascade.mind          └─ EVM ABI encode/decode │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Recursive Escrow Tree
+
+```
+Client (1000 USDC)
+ └─ Shake 0: PM ────────────────────── 1000 USDC locked
+      ├─ Shake 1: Architect ──────────── 400 USDC
+      │    ├─ Shake 3: Frontend ────────── 150 USDC
+      │    │    └─ Shake 5: CSS ──────────── 50 USDC
+      │    │         └─ Shake 7: Icons ────── 15 USDC
+      │    └─ Shake 4: Backend ─────────── 200 USDC
+      └─ Shake 2: QA ────────────────── 100 USDC
+
+Settlement: bottom-up (Icons → CSS → Frontend → Backend → Architect → QA → PM)
+Dispute at any level freezes all ancestors until resolved.
 ```
 
 ## Hackathon

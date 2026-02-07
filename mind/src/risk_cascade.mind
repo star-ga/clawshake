@@ -1,0 +1,258 @@
+// Clawshake — Risk Propagation in Recursive Hire Chains
+// Copyright (c) 2026 STARGA, Inc. All rights reserved.
+//
+// Models failure probability as a boundary value problem over the hire tree:
+//   a(d)·P''(d) + b(d)·P'(d) - λ·P(d) = -risk_source(d)
+//
+// Where:
+//   P(d)           = probability of settlement failure at depth d
+//   risk_source(d) = local dispute probability at depth d
+//   a(d)           = risk diffusion (uncertainty propagation)
+//   b(d)           = risk drift (deeper = riskier)
+//   λ              = risk damping
+//
+// Boundary conditions:
+//   P(leaf) = leaf_dispute_rate (empirical)
+//   P(0)    = 0 (root must settle — it's the initial commitment)
+//
+// Remizov Theorem 6 gives exact solution for variable-coefficient case.
+// This enables real-time risk assessment for recursive escrow chains.
+
+import std.math;
+import std.tensor;
+
+// ============================================================================
+// Risk Model
+// ============================================================================
+
+struct RiskModel {
+    max_depth: i32,            // maximum chain depth
+    leaf_dispute_rates: tensor<f64[N]>,  // dispute rate at each depth
+    lambda: f64,               // risk damping parameter
+    diffusion_base: f64,       // base diffusion coefficient
+    drift_rate: f64,           // drift per depth level
+}
+
+impl RiskModel {
+    fn new(max_depth: i32, leaf_rates: tensor<f64[N]>) -> RiskModel {
+        return RiskModel {
+            max_depth: max_depth,
+            leaf_dispute_rates: leaf_rates,
+            lambda: 2.0,
+            diffusion_base: 1.0,
+            drift_rate: 0.3,
+        };
+    }
+
+    // Risk diffusion: increases with depth (more unknowns deeper in chain)
+    fn a(&self, depth: f64) -> f64 {
+        return self.diffusion_base + 0.05 * depth;
+    }
+
+    // Risk drift: positive drift means risk naturally increases with depth
+    fn b(&self, depth: f64) -> f64 {
+        return self.drift_rate * depth;
+    }
+
+    // Risk source: interpolated from empirical leaf dispute rates
+    fn risk_source(&self, depth: f64) -> f64 {
+        let idx = depth as i32;
+        if idx >= self.max_depth { return self.leaf_dispute_rates[self.max_depth - 1]; }
+        if idx < 0 { return 0.0; }
+
+        // Linear interpolation between depth levels
+        let frac = depth - (idx as f64);
+        if idx + 1 >= self.max_depth {
+            return self.leaf_dispute_rates[idx];
+        }
+        return self.leaf_dispute_rates[idx] * (1.0 - frac)
+             + self.leaf_dispute_rates[idx + 1] * frac;
+    }
+
+    // ========================================================================
+    // Solve Risk Propagation via Remizov Theorem 6
+    // ========================================================================
+
+    fn propagate_risk(&self, n_grid: i32, n_iter: i32) -> (tensor<f64[N]>, tensor<f64[N]>) {
+        // Spatial grid: depth domain [0, max_depth]
+        let d_max = self.max_depth as f64;
+        let x_grid = linspace(0.0, d_max, n_grid);
+
+        // Precompute coefficients on grid
+        let a_vals: tensor<f64[N]> = tensor.zeros[f64, (n_grid,)];
+        let b_vals: tensor<f64[N]> = tensor.zeros[f64, (n_grid,)];
+        let c_vals: tensor<f64[N]> = tensor.zeros[f64, (n_grid,)];
+        let g_vals: tensor<f64[N]> = tensor.zeros[f64, (n_grid,)];
+
+        for i in 0..n_grid {
+            let d = x_grid[i];
+            a_vals[i] = self.a(d);
+            b_vals[i] = self.b(d);
+            c_vals[i] = 0.0; // No potential term
+            g_vals[i] = self.risk_source(d);
+        }
+
+        // Gauss-Laguerre quadrature
+        let (nodes, weights) = gauss_laguerre_nodes_16();
+
+        let f_sol: tensor<f64[N]> = tensor.zeros[f64, (n_grid,)];
+
+        for k in 0..16 {
+            let s_k = nodes[k];
+            let w_k = weights[k];
+            if w_k < 1e-15 { continue; }
+
+            let t_k = s_k / self.lambda;
+            let dt = t_k / (n_iter as f64);
+
+            let h = g_vals;
+            for iter in 0..n_iter {
+                h = apply_shift_operator(x_grid, h, n_grid, a_vals, b_vals, c_vals, dt);
+            }
+
+            for i in 0..n_grid {
+                f_sol[i] = f_sol[i] + (w_k / self.lambda) * h[i];
+            }
+        }
+
+        // Apply boundary conditions
+        // P(0) = 0 (root must settle)
+        f_sol[0] = 0.0;
+
+        // Normalize: clamp to [0, 1] probability range
+        for i in 0..n_grid {
+            if f_sol[i] < 0.0 { f_sol[i] = 0.0; }
+            if f_sol[i] > 1.0 { f_sol[i] = 1.0; }
+        }
+
+        return (x_grid, f_sol);
+    }
+
+    // ========================================================================
+    // Extract Risk Per Depth Level
+    // ========================================================================
+
+    fn risk_per_depth(&self) -> tensor<f64[N]> {
+        let n_grid = self.max_depth * 20; // 20 grid points per depth level
+        let (x_grid, f_sol) = self.propagate_risk(n_grid, 200);
+
+        let risks: tensor<f64[N]> = tensor.zeros[f64, (self.max_depth,)];
+        let step = (self.max_depth as f64) / (n_grid as f64);
+
+        for d in 0..self.max_depth {
+            // Sample risk at integer depth
+            let target_x = d as f64;
+            risks[d] = interp_linear(x_grid, f_sol, n_grid, target_x);
+        }
+
+        return risks;
+    }
+}
+
+// ============================================================================
+// Shift Operator + Utilities (from remizov_solver.mind)
+// ============================================================================
+
+fn apply_shift_operator(
+    x_grid: tensor<f64[N]>,
+    h: tensor<f64[N]>,
+    n_grid: i32,
+    a_vals: tensor<f64[N]>,
+    b_vals: tensor<f64[N]>,
+    c_vals: tensor<f64[N]>,
+    dt: f64
+) -> tensor<f64[N]> {
+    let h_new: tensor<f64[N]> = tensor.zeros[f64, (n_grid,)];
+
+    for i in 0..n_grid {
+        let xi = x_grid[i];
+        let ai = a_vals[i];
+        let bi = b_vals[i];
+        let ci = c_vals[i];
+
+        let shift_diff = 2.0 * sqrt(ai * dt);
+        let shift_drift = 2.0 * bi * dt;
+
+        let h_plus  = interp_linear(x_grid, h, n_grid, xi + shift_diff);
+        let h_minus = interp_linear(x_grid, h, n_grid, xi - shift_diff);
+        let h_drift = interp_linear(x_grid, h, n_grid, xi + shift_drift);
+        let h_local = h[i];
+
+        h_new[i] = 0.25 * h_plus + 0.25 * h_minus + 0.5 * h_drift + dt * ci * h_local;
+    }
+
+    return h_new;
+}
+
+fn interp_linear(x_grid: tensor<f64[N]>, y_grid: tensor<f64[N]>,
+                 n: i32, x_query: f64) -> f64 {
+    let x_min = x_grid[0];
+    let x_max = x_grid[n - 1];
+    if x_query <= x_min { return y_grid[0]; }
+    if x_query >= x_max { return y_grid[n - 1]; }
+    let step = (x_max - x_min) / (n - 1) as f64;
+    let idx_f = (x_query - x_min) / step;
+    let idx = idx_f as i32;
+    if idx >= n - 1 { return y_grid[n - 1]; }
+    let t = idx_f - (idx as f64);
+    return y_grid[idx] * (1.0 - t) + y_grid[idx + 1] * t;
+}
+
+fn linspace(start: f64, end: f64, n: i32) -> tensor<f64[N]> {
+    let step = (end - start) / (n - 1) as f64;
+    let grid: tensor<f64[N]> = tensor.zeros[f64, (n,)];
+    for i in 0..n {
+        grid[i] = start + (i as f64) * step;
+    }
+    return grid;
+}
+
+fn gauss_laguerre_nodes_16() -> (tensor<f64[16]>, tensor<f64[16]>) {
+    let nodes: tensor<f64[16]> = [
+        0.08764941047,  0.46269632892,  1.14105777483,  2.12928364509,
+        3.43708663389,  5.07801861543,  7.07033853541,  9.43831433639,
+        12.21422336552, 15.44152736604, 19.18015685822, 23.51590569378,
+        28.57872974288, 34.58339867187, 41.94045264764, 51.70116033955
+    ];
+
+    let weights: tensor<f64[16]> = [
+        0.22503517040,  0.52583559710,  0.83196139498,  1.14609924096,
+        1.47175765696,  1.81315923045,  2.17594337553,  2.56823869980,
+        3.00249764080,  3.49795401766,  4.08370194093,  4.81249799915,
+        5.78714534680,  7.15619041979,  9.24781960674, 13.00605499059
+    ];
+
+    return (nodes, weights);
+}
+
+// ============================================================================
+// Main — Risk Visualization
+// ============================================================================
+
+fn main() {
+    print("Clawshake Risk Cascade Model");
+    print("============================\n");
+
+    // 5-level hire chain with empirical dispute rates
+    let dispute_rates: tensor<f64[5]> = [
+        0.02,   // depth 0: root (2% dispute rate)
+        0.05,   // depth 1: primary subcontractor (5%)
+        0.08,   // depth 2: secondary (8%)
+        0.12,   // depth 3: tertiary (12%)
+        0.15    // depth 4: leaf agents (15%)
+    ];
+
+    let model = RiskModel::new(5, dispute_rates);
+    let risks = model.risk_per_depth();
+
+    print("Risk heatmap (settlement failure probability per depth):");
+    print("=========================================================");
+
+    for d in 0..5 {
+        let bar_len = (risks[d] * 50.0) as i32;
+        let bar = "█".repeat(bar_len);
+        print("  Depth ", d, ": P(fail) = ", risks[d], "  ", bar);
+    }
+
+    print("\nDone.");
+}

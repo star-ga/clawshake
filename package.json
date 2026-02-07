@@ -7,7 +7,8 @@
     "test": "hardhat test",
     "deploy:local": "hardhat run scripts/deploy.js",
     "deploy:base-sepolia": "hardhat run scripts/deploy.js --network baseSepolia",
-    "demo": "node demo/scenarios/hire-chain.js"
+    "demo": "node demo/scenarios/hire-chain.js",
+    "demo:deep": "hardhat run demo/scenarios/deep-chain.js"
   },
   "keywords": ["usdc", "agents", "escrow", "base", "openclaw", "clawshake"],
   "author": "STARGA Inc",

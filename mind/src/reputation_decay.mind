@@ -1,0 +1,273 @@
+// Clawshake — Reputation Decay via Remizov ODE Solver
+// Copyright (c) 2026 STARGA, Inc. All rights reserved.
+//
+// Models agent reputation as a second-order ODE with impulse forcing:
+//   f''(t) - λ·f(t) = -activity(t)
+//
+// Where:
+//   f(t)        = trust score at time t ∈ [0, 1]
+//   activity(t) = sum of Dirac impulses at each completed shake
+//   λ           = decay rate parameter
+//
+// Between shakes, reputation decays exponentially toward zero.
+// Each completed shake injects a positive impulse that boosts the score.
+// Failed disputes inject negative impulses.
+//
+// Remizov Theorem 6 gives exact solution via shift operator + Chernoff formula.
+// For constant coefficients (a=1, b=0, c=0), the Green's function is:
+//   G(t,s) = (1/2√λ) · exp(-√λ|t-s|)
+
+import std.math;
+import std.tensor;
+
+// ============================================================================
+// Agent History Record
+// ============================================================================
+
+struct ShakeRecord {
+    timestamp: f64,        // when the shake completed (seconds since epoch)
+    earned: f64,           // USDC earned (normalized)
+    success: bool,         // true = released, false = dispute lost
+}
+
+struct ReputationModel {
+    agent_history: [ShakeRecord],
+    lambda: f64,           // decay rate (higher = faster decay)
+    success_weight: f64,   // impulse magnitude for successful shakes
+    failure_penalty: f64,  // negative impulse for dispute losses
+}
+
+impl ReputationModel {
+    fn new(history: [ShakeRecord]) -> ReputationModel {
+        return ReputationModel {
+            agent_history: history,
+            lambda: 0.001,        // ~16 minute half-life in seconds
+            success_weight: 0.1,
+            failure_penalty: 0.3,
+        };
+    }
+
+    // ========================================================================
+    // Exact Solution via Green's Function
+    // ========================================================================
+    // For f''(t) - λf(t) = -δ(t - t_k), the response is:
+    //   f(t) = (1/2√λ) · exp(-√λ|t - t_k|) for t > t_k
+    //
+    // Total reputation = superposition of all impulse responses
+
+    fn compute_trust_score(&self, current_time: f64) -> f64 {
+        let sqrt_lambda = sqrt(self.lambda);
+        let scale = 1.0 / (2.0 * sqrt_lambda);
+
+        let score = 0.0;
+
+        for record in self.agent_history {
+            let dt = current_time - record.timestamp;
+            if dt < 0.0 { continue; } // Future events ignored
+
+            let decay = exp(-sqrt_lambda * dt);
+
+            if record.success {
+                // Positive impulse weighted by earnings
+                let magnitude = self.success_weight * (1.0 + record.earned);
+                score = score + scale * magnitude * decay;
+            } else {
+                // Negative impulse for dispute losses
+                score = score - scale * self.failure_penalty * decay;
+            }
+        }
+
+        // Clamp to [0, 1]
+        if score < 0.0 { return 0.0; }
+        if score > 1.0 { return 1.0; }
+        return score;
+    }
+
+    // ========================================================================
+    // Remizov ODE Solver (for variable decay rates)
+    // ========================================================================
+    // When λ varies with time (e.g., λ(t) = base_λ + seasonal(t)),
+    // no closed-form exists. Use Remizov Theorem 6.
+
+    fn compute_trust_score_variable(
+        &self,
+        current_time: f64,
+        n_grid: i32,
+        n_iter: i32
+    ) -> f64 {
+        let t_start = 0.0;
+        let t_end = current_time;
+
+        if t_end <= t_start { return 0.5; } // No history
+
+        let x_grid = linspace(t_start, t_end, n_grid);
+
+        // Build activity function on grid (sum of impulses, smoothed)
+        let g_vals: tensor<f64[N]> = tensor.zeros[f64, (n_grid,)];
+        let sigma = (t_end - t_start) / (n_grid as f64) * 2.0; // Smoothing width
+
+        for record in self.agent_history {
+            let impulse = if record.success {
+                self.success_weight * (1.0 + record.earned)
+            } else {
+                -self.failure_penalty
+            };
+
+            // Gaussian-smoothed impulse on grid
+            for i in 0..n_grid {
+                let dt = x_grid[i] - record.timestamp;
+                let kernel = exp(-(dt * dt) / (2.0 * sigma * sigma));
+                g_vals[i] = g_vals[i] + impulse * kernel;
+            }
+        }
+
+        // Constant coefficients: a(t)=1, b(t)=0, c(t)=0
+        let a_vals: tensor<f64[N]> = tensor.ones[f64, (n_grid,)];
+        let b_vals: tensor<f64[N]> = tensor.zeros[f64, (n_grid,)];
+        let c_vals: tensor<f64[N]> = tensor.zeros[f64, (n_grid,)];
+
+        // Solve using Remizov shift operator
+        let (nodes, weights) = gauss_laguerre_nodes_16();
+
+        let f_sol: tensor<f64[N]> = tensor.zeros[f64, (n_grid,)];
+
+        for k in 0..16 {
+            let s_k = nodes[k];
+            let w_k = weights[k];
+            if w_k < 1e-15 { continue; }
+
+            let t_k = s_k / self.lambda;
+            let dt = t_k / (n_iter as f64);
+
+            let h = g_vals;
+            for iter in 0..n_iter {
+                h = apply_shift_operator(x_grid, h, n_grid, a_vals, b_vals, c_vals, dt);
+            }
+
+            for i in 0..n_grid {
+                f_sol[i] = f_sol[i] + (w_k / self.lambda) * h[i];
+            }
+        }
+
+        // Extract trust score at current time (last grid point)
+        let raw_score = f_sol[n_grid - 1];
+
+        // Sigmoid normalization to [0, 1]
+        let normalized = 1.0 / (1.0 + exp(-raw_score));
+        return normalized;
+    }
+}
+
+// ============================================================================
+// Shift Operator (same as remizov_solver.mind)
+// ============================================================================
+
+fn apply_shift_operator(
+    x_grid: tensor<f64[N]>,
+    h: tensor<f64[N]>,
+    n_grid: i32,
+    a_vals: tensor<f64[N]>,
+    b_vals: tensor<f64[N]>,
+    c_vals: tensor<f64[N]>,
+    dt: f64
+) -> tensor<f64[N]> {
+    let h_new: tensor<f64[N]> = tensor.zeros[f64, (n_grid,)];
+
+    for i in 0..n_grid {
+        let xi = x_grid[i];
+        let ai = a_vals[i];
+        let bi = b_vals[i];
+        let ci = c_vals[i];
+
+        let shift_diff = 2.0 * sqrt(ai * dt);
+        let shift_drift = 2.0 * bi * dt;
+
+        let h_plus  = interp_linear(x_grid, h, n_grid, xi + shift_diff);
+        let h_minus = interp_linear(x_grid, h, n_grid, xi - shift_diff);
+        let h_drift = interp_linear(x_grid, h, n_grid, xi + shift_drift);
+        let h_local = h[i];
+
+        h_new[i] = 0.25 * h_plus + 0.25 * h_minus + 0.5 * h_drift + dt * ci * h_local;
+    }
+
+    return h_new;
+}
+
+fn interp_linear(x_grid: tensor<f64[N]>, y_grid: tensor<f64[N]>,
+                 n: i32, x_query: f64) -> f64 {
+    let x_min = x_grid[0];
+    let x_max = x_grid[n - 1];
+    if x_query <= x_min { return y_grid[0]; }
+    if x_query >= x_max { return y_grid[n - 1]; }
+    let step = (x_max - x_min) / (n - 1) as f64;
+    let idx_f = (x_query - x_min) / step;
+    let idx = idx_f as i32;
+    if idx >= n - 1 { return y_grid[n - 1]; }
+    let t = idx_f - (idx as f64);
+    return y_grid[idx] * (1.0 - t) + y_grid[idx + 1] * t;
+}
+
+fn linspace(start: f64, end: f64, n: i32) -> tensor<f64[N]> {
+    let step = (end - start) / (n - 1) as f64;
+    let grid: tensor<f64[N]> = tensor.zeros[f64, (n,)];
+    for i in 0..n {
+        grid[i] = start + (i as f64) * step;
+    }
+    return grid;
+}
+
+fn gauss_laguerre_nodes_16() -> (tensor<f64[16]>, tensor<f64[16]>) {
+    let nodes: tensor<f64[16]> = [
+        0.08764941047,  0.46269632892,  1.14105777483,  2.12928364509,
+        3.43708663389,  5.07801861543,  7.07033853541,  9.43831433639,
+        12.21422336552, 15.44152736604, 19.18015685822, 23.51590569378,
+        28.57872974288, 34.58339867187, 41.94045264764, 51.70116033955
+    ];
+
+    let weights: tensor<f64[16]> = [
+        0.22503517040,  0.52583559710,  0.83196139498,  1.14609924096,
+        1.47175765696,  1.81315923045,  2.17594337553,  2.56823869980,
+        3.00249764080,  3.49795401766,  4.08370194093,  4.81249799915,
+        5.78714534680,  7.15619041979,  9.24781960674, 13.00605499059
+    ];
+
+    return (nodes, weights);
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
+fn main() {
+    print("Clawshake Reputation Decay Model");
+    print("================================\n");
+
+    // Simulate agent with 5 successful shakes over 24 hours
+    let history = [
+        ShakeRecord { timestamp: 0.0,     earned: 500.0,  success: true },
+        ShakeRecord { timestamp: 3600.0,  earned: 200.0,  success: true },
+        ShakeRecord { timestamp: 7200.0,  earned: 100.0,  success: true },
+        ShakeRecord { timestamp: 14400.0, earned: 300.0,  success: false }, // Dispute lost
+        ShakeRecord { timestamp: 21600.0, earned: 150.0,  success: true },
+    ];
+
+    let model = ReputationModel::new(history);
+
+    // Score right after last shake
+    let score_now = model.compute_trust_score(21600.0);
+    print("Trust score (at last shake):  ", score_now);
+
+    // Score 1 hour later (decay)
+    let score_1h = model.compute_trust_score(25200.0);
+    print("Trust score (1 hour later):   ", score_1h);
+
+    // Score 24 hours later (significant decay)
+    let score_24h = model.compute_trust_score(108000.0);
+    print("Trust score (24 hours later): ", score_24h);
+
+    // Score 7 days later (near zero without activity)
+    let score_7d = model.compute_trust_score(604800.0);
+    print("Trust score (7 days later):   ", score_7d);
+
+    print("\nDone.");
+}

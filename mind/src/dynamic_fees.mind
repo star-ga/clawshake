@@ -1,0 +1,263 @@
+// Clawshake — Dynamic Fee Optimization via Remizov ODE Solver
+// Copyright (c) 2026 STARGA, Inc. All rights reserved.
+//
+// Models optimal protocol fee rate as a second-order ODE:
+//   a(t)·f''(t) + b(t)·f'(t) + (c(t) - λ)·f(t) = -g(t)
+//
+// Where:
+//   f(t) = optimal fee rate at time t
+//   g(t) = demand pressure (active shakes per unit time)
+//   a(t) = market volatility factor (1 + 0.1 * avg_chain_depth)
+//   b(t) = chain depth weighting (deeper chains → higher drift)
+//   c(t) = dispute rate (more disputes → higher base fee)
+//   λ    = damping parameter (prevents fee oscillation)
+//
+// Uses Remizov Theorem 6 translation-based solver via Chernoff product formula
+// and Gauss-Laguerre quadrature for the Laplace integral.
+//
+// Reference: Remizov, I.D. (2025). arXiv:2301.06765v4
+
+import std.math;
+import std.tensor;
+
+// ============================================================================
+// On-Chain Metrics → ODE Coefficients
+// ============================================================================
+
+struct FeeModel {
+    active_shakes: f64,      // current demand (number of active escrows)
+    dispute_rate: f64,       // disputes / total shakes (0.0 to 1.0)
+    avg_chain_depth: f64,    // mean recursive hire chain depth
+    lambda: f64,             // damping parameter (must be > sup|c(t)|)
+}
+
+impl FeeModel {
+    fn new(active_shakes: f64, dispute_rate: f64, avg_chain_depth: f64) -> FeeModel {
+        // Lambda must exceed max of c(t) for convergence
+        let c_max = dispute_rate * 100.0;
+        let lambda = c_max + 2.0; // Safety margin above c_max
+        return FeeModel {
+            active_shakes: active_shakes,
+            dispute_rate: dispute_rate,
+            avg_chain_depth: avg_chain_depth,
+            lambda: lambda,
+        };
+    }
+
+    // Coefficient a(t): diffusion term — scales with chain depth volatility
+    // Higher chain depth → more uncertainty → larger diffusion
+    fn a(&self, t: f64) -> f64 {
+        return 1.0 + 0.1 * self.avg_chain_depth;
+    }
+
+    // Coefficient b(t): drift term — deeper chains drift fee upward
+    fn b(&self, t: f64) -> f64 {
+        return 0.5 * self.avg_chain_depth;
+    }
+
+    // Coefficient c(t): potential term — dispute rate raises base
+    fn c(&self, t: f64) -> f64 {
+        return self.dispute_rate * 100.0;
+    }
+
+    // Source g(t): demand pressure drives fee toward equilibrium
+    fn g(&self, t: f64) -> f64 {
+        return self.active_shakes / 100.0;
+    }
+
+    // ========================================================================
+    // Remizov Theorem 6 Shift Operator
+    // ========================================================================
+    // S(dt)h(x) = (1/4) h(x + 2√(a(x)·dt))
+    //           + (1/4) h(x - 2√(a(x)·dt))
+    //           + (1/2) h(x + 2·b(x)·dt)
+    //           + dt · c(x) · h(x)
+
+    fn apply_shift(
+        &self,
+        x_grid: tensor<f64[N]>,
+        h: tensor<f64[N]>,
+        n_grid: i32,
+        dt: f64
+    ) -> tensor<f64[N]> {
+        let h_new: tensor<f64[N]> = tensor.zeros[f64, (n_grid,)];
+
+        for i in 0..n_grid {
+            let xi = x_grid[i];
+            let ai = self.a(xi);
+            let bi = self.b(xi);
+            let ci = self.c(xi);
+
+            let shift_diff = 2.0 * sqrt(ai * dt);
+            let shift_drift = 2.0 * bi * dt;
+
+            // Interpolated evaluations at shifted points
+            let h_plus  = interp_linear(x_grid, h, n_grid, xi + shift_diff);
+            let h_minus = interp_linear(x_grid, h, n_grid, xi - shift_diff);
+            let h_drift = interp_linear(x_grid, h, n_grid, xi + shift_drift);
+            let h_local = h[i];
+
+            h_new[i] = 0.25 * h_plus + 0.25 * h_minus + 0.5 * h_drift + dt * ci * h_local;
+        }
+
+        return h_new;
+    }
+
+    // ========================================================================
+    // Core Solver: Chernoff Product + Gauss-Laguerre Quadrature
+    // ========================================================================
+    // f(x) = ∫₀^∞ e^{-λt} lim_{n→∞} (S(t/n))^n g(x) dt
+    //       ≈ (1/λ) Σ_k w_k · (S(s_k/(λ·n_iter)))^n_iter · g(x)
+
+    fn solve_fee_curve(&self, n_grid: i32, n_iter: i32) -> (tensor<f64[N]>, tensor<f64[N]>) {
+        // Spatial grid: fee rate domain [0, 10] (0% to 10%)
+        let x_grid = linspace(0.0, 10.0, n_grid);
+
+        // Precompute source function on grid
+        let g_vals: tensor<f64[N]> = tensor.zeros[f64, (n_grid,)];
+        for i in 0..n_grid {
+            g_vals[i] = self.g(x_grid[i]);
+        }
+
+        // Gauss-Laguerre nodes and weights (16-point for efficiency)
+        let (nodes, weights) = gauss_laguerre_nodes_16();
+
+        let f_solution: tensor<f64[N]> = tensor.zeros[f64, (n_grid,)];
+
+        for k in 0..16 {
+            let s_k = nodes[k];
+            let w_k = weights[k];
+
+            if w_k < 1e-15 { continue; }
+
+            let t_k = s_k / self.lambda;
+            let dt = t_k / (n_iter as f64);
+
+            let h = g_vals;
+
+            // Apply shift operator n_iter times: h ← S(dt)^n_iter g
+            for iter in 0..n_iter {
+                h = self.apply_shift(x_grid, h, n_grid, dt);
+            }
+
+            // Accumulate weighted contribution
+            for i in 0..n_grid {
+                f_solution[i] = f_solution[i] + (w_k / self.lambda) * h[i];
+            }
+        }
+
+        return (x_grid, f_solution);
+    }
+
+    // ========================================================================
+    // Main Entry: Compute Optimal Fee in Basis Points
+    // ========================================================================
+    // Solves the ODE and extracts the optimal fee at the equilibrium point.
+    // Returns fee in basis points (e.g., 250 = 2.5%).
+
+    fn solve_optimal_fee(&self) -> f64 {
+        let (x_grid, f_solution) = self.solve_fee_curve(100, 200);
+
+        // Find the peak of the fee curve — this is the equilibrium fee rate
+        let max_val = 0.0;
+        let max_idx = 0;
+        for i in 0..100 {
+            if f_solution[i] > max_val {
+                max_val = f_solution[i];
+                max_idx = i;
+            }
+        }
+
+        // Convert from ODE domain [0, 10] to basis points [0, 1000]
+        let optimal_rate = x_grid[max_idx];
+        let fee_bps = optimal_rate * 100.0; // 2.5 → 250 bps
+
+        // Clamp to [100, 1000] bps (1% to 10%)
+        if fee_bps < 100.0 { return 100.0; }
+        if fee_bps > 1000.0 { return 1000.0; }
+        return fee_bps;
+    }
+}
+
+// ============================================================================
+// Utility: Linear Interpolation (same as remizov_solver.mind)
+// ============================================================================
+
+fn interp_linear(x_grid: tensor<f64[N]>, y_grid: tensor<f64[N]>,
+                 n: i32, x_query: f64) -> f64 {
+    let x_min = x_grid[0];
+    let x_max = x_grid[n - 1];
+
+    if x_query <= x_min { return y_grid[0]; }
+    if x_query >= x_max { return y_grid[n - 1]; }
+
+    let step = (x_max - x_min) / (n - 1) as f64;
+    let idx_f = (x_query - x_min) / step;
+    let idx = idx_f as i32;
+
+    if idx >= n - 1 { return y_grid[n - 1]; }
+
+    let t = idx_f - (idx as f64);
+    return y_grid[idx] * (1.0 - t) + y_grid[idx + 1] * t;
+}
+
+fn linspace(start: f64, end: f64, n: i32) -> tensor<f64[N]> {
+    let step = (end - start) / (n - 1) as f64;
+    let grid: tensor<f64[N]> = tensor.zeros[f64, (n,)];
+    for i in 0..n {
+        grid[i] = start + (i as f64) * step;
+    }
+    return grid;
+}
+
+// ============================================================================
+// Gauss-Laguerre Quadrature (16-point)
+// ============================================================================
+
+fn gauss_laguerre_nodes_16() -> (tensor<f64[16]>, tensor<f64[16]>) {
+    let nodes: tensor<f64[16]> = [
+        0.08764941047,  0.46269632892,  1.14105777483,  2.12928364509,
+        3.43708663389,  5.07801861543,  7.07033853541,  9.43831433639,
+        12.21422336552, 15.44152736604, 19.18015685822, 23.51590569378,
+        28.57872974288, 34.58339867187, 41.94045264764, 51.70116033955
+    ];
+
+    let weights: tensor<f64[16]> = [
+        0.22503517040,  0.52583559710,  0.83196139498,  1.14609924096,
+        1.47175765696,  1.81315923045,  2.17594337553,  2.56823869980,
+        3.00249764080,  3.49795401766,  4.08370194093,  4.81249799915,
+        5.78714534680,  7.15619041979,  9.24781960674, 13.00605499059
+    ];
+
+    return (nodes, weights);
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
+fn main() {
+    print("Clawshake Dynamic Fee Solver");
+    print("============================\n");
+
+    // Example: moderate demand, low disputes, shallow chains
+    let model = FeeModel::new(50.0, 0.05, 1.5);
+
+    print("Input metrics:");
+    print("  Active shakes: ", model.active_shakes);
+    print("  Dispute rate:  ", model.dispute_rate);
+    print("  Avg depth:     ", model.avg_chain_depth);
+    print("  Lambda:        ", model.lambda);
+
+    let optimal_fee = model.solve_optimal_fee();
+    print("\nOptimal fee: ", optimal_fee, " bps (", optimal_fee / 100.0, "%)");
+
+    // High-risk scenario: many disputes, deep chains
+    let risky = FeeModel::new(200.0, 0.15, 3.0);
+    let risky_fee = risky.solve_optimal_fee();
+    print("\nHigh-risk scenario:");
+    print("  Dispute rate: 15%, Avg depth: 3.0");
+    print("  Optimal fee: ", risky_fee, " bps (", risky_fee / 100.0, "%)");
+
+    print("\nDone.");
+}
