@@ -52,6 +52,8 @@ contract ShakeEscrow is ReentrancyGuard {
     error ChildDisputed();
     error SubtreeNotClean();
     error FreezeDurationNotExpired();
+    error TooManyChildren();
+    error SelfDeal();
 
     // --- State ---
     IERC20 public immutable usdc;
@@ -61,6 +63,7 @@ contract ShakeEscrow is ReentrancyGuard {
     uint256 public constant protocolFeeBps = 250; // 2.5% (fallback when no oracle)
     uint48 public constant disputeWindow = 48 hours;
     uint48 public constant MAX_FREEZE_DURATION = 7 days;
+    uint256 public constant MAX_CHILDREN = 50;
 
     uint256 public nextShakeId;
 
@@ -209,11 +212,13 @@ contract ShakeEscrow is ReentrancyGuard {
     }
 
     /// @notice Accept a shake — the "handshake" that seals the deal
+    /// @dev Child shakes cannot be accepted by their own requester (anti-self-dealing)
     function acceptShake(uint256 shakeId) external {
         Shake storage s = shakes[shakeId];
         if (s.status != ShakeStatus.Pending) revert NotPending();
         if (block.timestamp >= s.deadline) revert DeadlinePassed();
         if (s.worker != address(0)) revert AlreadyAccepted();
+        if (s.isChildShake && msg.sender == s.requester) revert SelfDeal();
 
         s.worker = msg.sender;
         s.status = ShakeStatus.Active;
@@ -350,15 +355,28 @@ contract ShakeEscrow is ReentrancyGuard {
     }
 
     /// @notice Force-resolve a stale dispute after MAX_FREEZE_DURATION — prevents grief-freeze attacks.
-    /// @dev Anyone can call once the freeze window expires. Splits remaining funds 50/50.
+    /// @dev Anyone can call once the freeze window expires. All children must be settled first.
+    ///      Splits the worker's net payout (amount - childSpend - fee) 50/50 between worker and requester.
     function forceResolve(uint256 shakeId) external nonReentrant {
         Shake storage s = shakes[shakeId];
         if (s.status != ShakeStatus.Disputed) revert NotDisputed();
         if (uint48(block.timestamp) < disputedAt[shakeId] + MAX_FREEZE_DURATION) revert FreezeDurationNotExpired();
 
-        uint256 available = remainingBudget[shakeId];
-        uint256 workerShare = available / 2;
-        uint256 requesterShare = available - workerShare;
+        // Children must be settled before force-resolve (same as releaseShake)
+        uint256[] storage children = childShakes[shakeId];
+        for (uint256 i = 0; i < children.length; i++) {
+            ShakeStatus childStatus = shakes[children[i]].status;
+            if (childStatus != ShakeStatus.Released && childStatus != ShakeStatus.Refunded) {
+                revert ChildrenNotSettled();
+            }
+        }
+
+        uint256 feeBps = _getFeeBps(shakeId);
+        uint256 fee = (s.amount * feeBps) / 10000;
+        uint256 childSpend = s.amount - remainingBudget[shakeId];
+        uint256 workerNet = s.amount - childSpend - fee;
+        uint256 workerShare = workerNet / 2;
+        uint256 requesterShare = workerNet - workerShare;
 
         s.status = ShakeStatus.Released;
 
@@ -368,6 +386,7 @@ contract ShakeEscrow is ReentrancyGuard {
 
         if (workerShare > 0) usdc.safeTransfer(s.worker, workerShare);
         if (requesterShare > 0) usdc.safeTransfer(s.requester, requesterShare);
+        if (fee > 0) usdc.safeTransfer(treasury, fee);
 
         if (address(registry) != address(0)) {
             registry.recordShake(s.worker, workerShare, false);
@@ -399,6 +418,7 @@ contract ShakeEscrow is ReentrancyGuard {
         if (parent.status != ShakeStatus.Active) revert ParentNotActive();
         if (msg.sender != parent.worker) revert NotParentWorker();
         if (amount > remainingBudget[parentShakeId]) revert ExceedsParentBudget();
+        if (childShakes[parentShakeId].length >= MAX_CHILDREN) revert TooManyChildren();
         if (amount == 0) revert AmountZero();
         if (deadline == 0) revert DeadlineZero();
 

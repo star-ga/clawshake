@@ -522,22 +522,31 @@ describe("ShakeEscrow", function () {
       ).to.be.revertedWithCustomError(escrow, "FreezeDurationNotExpired");
     });
 
-    it("splits funds 50/50 after MAX_FREEZE_DURATION", async function () {
+    it("splits funds 50/50 after MAX_FREEZE_DURATION (minus fee)", async function () {
       // Fast forward 7 days + 1 second
       await ethers.provider.send("evm_increaseTime", [7 * 86400 + 1]);
       await ethers.provider.send("evm_mine");
 
       const workerBefore = await usdc.balanceOf(worker.address);
       const requesterBefore = await usdc.balanceOf(requester.address);
+      const treasuryBefore = await usdc.balanceOf(deployer.address);
 
       await escrow.connect(outsider).forceResolve(0);
 
       const workerAfter = await usdc.balanceOf(worker.address);
       const requesterAfter = await usdc.balanceOf(requester.address);
+      const treasuryAfter = await usdc.balanceOf(deployer.address);
 
-      // 500 USDC split: 250 each
-      expect(workerAfter - workerBefore).to.equal(AMOUNT / 2);
-      expect(requesterAfter - requesterBefore).to.equal(AMOUNT / 2);
+      // 500 USDC - 2.5% fee (12.5 USDC) = 487.5 USDC split 50/50 = 243.75 each
+      const amt = BigInt(AMOUNT);
+      const fee = amt * 250n / 10000n; // 12,500,000
+      const workerNet = amt - fee;
+      const expectedWorker = workerNet / 2n;
+      const expectedRequester = workerNet - expectedWorker;
+
+      expect(workerAfter - workerBefore).to.equal(expectedWorker);
+      expect(requesterAfter - requesterBefore).to.equal(expectedRequester);
+      expect(treasuryAfter - treasuryBefore).to.equal(fee);
 
       const shake = await escrow.getShake(0);
       expect(shake.status).to.equal(3); // Released
