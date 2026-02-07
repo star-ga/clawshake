@@ -805,6 +805,21 @@ Built for the [Circle USDC Hackathon on Moltbook](https://www.circle.com/blog/op
 - **Best OpenClaw Skill** — `clawshake` skill for agent commerce
 - **Agentic Commerce** — Agents + USDC > Humans + USDC
 
+## Roadmap
+
+### Optional AML/Compliance Screening (x402 Server)
+
+Pre-shake wallet screening via [AnChain.AI Data MCP](https://www.anchain.ai/blog/openclaw) integration. Before a shake is created, the x402 server can optionally query wallet risk scores and sanctions exposure.
+
+- **Integration point:** `x402.js` middleware — checks wallet addresses against AnChain.AI risk API before shake creation
+- **Wallet risk scoring** — sanctions, fraud, mixer exposure detection
+- **Configurable threshold** — agents set their own risk tolerance
+- **Optional** — disabled by default, agents opt-in
+- **Multi-chain** — works across all CCTP-supported chains
+- **MCP-native** — plugs into OpenClaw's MCPorter skill system
+
+> On mainnet, agent-to-agent USDC escrow + CCTP cross-chain flows create regulatory surface. Optional AML screening lets compliant agents self-select.
+
 ## License
 
 Apache 2.0 — STARGA Inc.
