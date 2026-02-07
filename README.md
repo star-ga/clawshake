@@ -44,7 +44,7 @@ Clawshake is the deal-making layer for AI agents. The **"shake"** is the primiti
 | **Settlement** | 5-14 business days | Seconds (Base L2) |
 | **Coordination** | Email, chat, meetings | On-chain shakes, cascading settlement |
 
-## What's New in v3
+## What's New
 
 | Feature | Description |
 |---------|-------------|
@@ -82,12 +82,12 @@ cp .env.example .env
 npm run deploy:base-sepolia
 ```
 
-## Deployed Contracts (Base Sepolia) — v2
+## Deployed Contracts (Base Sepolia)
 
 | Contract | Address |
 |----------|---------|
-| **ShakeEscrow v2** | [`0xa33F9fA90389465413FFb880FD41e914b7790C61`](https://sepolia.basescan.org/address/0xa33F9fA90389465413FFb880FD41e914b7790C61) |
-| **AgentRegistry v2** | [`0xdF3484cFe3C31FE00293d703f30da1197a16733E`](https://sepolia.basescan.org/address/0xdF3484cFe3C31FE00293d703f30da1197a16733E) |
+| **ShakeEscrow** | [`0xa33F9fA90389465413FFb880FD41e914b7790C61`](https://sepolia.basescan.org/address/0xa33F9fA90389465413FFb880FD41e914b7790C61) |
+| **AgentRegistry** | [`0xdF3484cFe3C31FE00293d703f30da1197a16733E`](https://sepolia.basescan.org/address/0xdF3484cFe3C31FE00293d703f30da1197a16733E) |
 | **USDC** | [`0x036CbD53842c5426634e7929541eC2318f3dCF7e`](https://sepolia.basescan.org/address/0x036CbD53842c5426634e7929541eC2318f3dCF7e) (Circle testnet) |
 
 ## Demo Transactions (Base Sepolia — Live)
@@ -199,9 +199,9 @@ The core primitive — USDC escrow with:
 - **Recursive agent hire chains** (parent → child shakes)
 - **Cascading settlement** — children must settle before parent can release
 - **Budget tracking** — `remainingBudget` enforced on child allocations
-- **Dispute cascade** (v3) — `_freezeParentChain()` / `_unfreezeParentChain()` propagate disputes up the tree
-- **Subtree cleanliness** (v3) — `_isSubtreeClean()` recursively verifies no active disputes in descendants
-- **Dynamic fees** (v3) — pluggable `IFeeOracle` interface for depth-based protocol fees
+- **Dispute cascade** — `_freezeParentChain()` / `_unfreezeParentChain()` propagate disputes up the tree
+- **Subtree cleanliness** — `_isSubtreeClean()` recursively verifies no active disputes in descendants
+- **Dynamic fees** — pluggable `IFeeOracle` interface for depth-based protocol fees
 - Custom errors for gas efficiency
 - Auto reputation updates via AgentRegistry integration
 
@@ -213,7 +213,7 @@ SBT-based reputation with access control:
 - `isRegistered()` for on-chain identity checks
 - Sybil-resistant (new agents start at zero)
 
-### AgentDelegate.sol (v3)
+### AgentDelegate.sol
 Session key delegation for restricted agent wallets:
 - Spend-limited sessions (`maxSpend` in USDC)
 - Time-bounded (`expiresAt` timestamp)
@@ -221,7 +221,7 @@ Session key delegation for restricted agent wallets:
 - Delegates can create shakes on behalf of owners
 - Owner can revoke sessions at any time
 
-### FeeOracle.sol (v3)
+### FeeOracle.sol
 Dynamic protocol fee oracle:
 - `baseFeeBps` + `depthPremiumBps × chainDepth` — deeper chains pay proportionally higher fees
 - `MAX_FEE_BPS = 1000` (10% hard cap)
@@ -263,7 +263,7 @@ At Base L2 gas prices (~$0.05/100K gas), a full 5-level recursive hire chain set
 npx hardhat test test/GasBenchmark.test.js
 ```
 
-### Dispute Cascade (v3)
+### Dispute Cascade
 
 When a child shake is disputed, the dispute propagates up the entire parent chain:
 
@@ -279,7 +279,7 @@ When a child shake is disputed, the dispute propagates up the entire parent chai
 - `resolveDispute()` calls `_unfreezeParentChain()` — walks up and resets frozen timestamps if subtree is now clean
 - Parents cannot release while any descendant is disputed — prevents premature USDC settlement
 
-### Session Keys (v3)
+### Session Keys
 
 `AgentDelegate.sol` enables restricted delegation without sharing private keys:
 
@@ -296,7 +296,7 @@ delegate.connect(delegateWallet).createShakeAsDelegate(sessionId, amount, deadli
 - **Revocable**: owner calls `revokeSession()` at any time
 - USDC is pulled from the owner's balance (not the delegate's)
 
-### Dynamic Fees (v3)
+### Dynamic Fees
 
 `FeeOracle.sol` replaces the static 2.5% fee with depth-based pricing:
 
@@ -366,7 +366,7 @@ Released                              workerWins? → Released
 | `resolveDispute` | Treasury only | Status == Disputed |
 | `refundShake` | Anyone | Status == Pending/Active, after deadline |
 
-**Parent/child failure propagation (v3 — dispute cascade):**
+**Parent/child failure propagation (dispute cascade):**
 - If a child is Disputed → parent chain is **frozen** (`disputeFrozenUntil = MAX`) — cannot `releaseShake` until dispute resolves
 - If a grandchild is Disputed → `_isSubtreeClean()` returns false for all ancestors — `SubtreeNotClean` revert
 - If a child is Refunded → parent can release (Refunded is a terminal state)
@@ -394,7 +394,7 @@ Every child shake path resolves in finite time. No state can persist indefinitel
 
 **Workers can pre-screen counterparties** via AgentRegistry: `successRate`, `disputesLost`, `registeredAt`, `totalShakes` — refuse shakes from untrustworthy requesters.
 
-### x402 HTTP Payment Endpoint (v3)
+### x402 HTTP Payment Endpoint
 
 REST server for agent-to-agent discovery via standard HTTP with x402 payment-required headers:
 
@@ -429,7 +429,7 @@ The requesting agent submits USDC payment on-chain and retries with `paymentTx`.
 
 ### Governance Model
 
-Clawshake v3 has a minimal, explicit governance model — intentionally simple for a hackathon MVP:
+Clawshake has a minimal, explicit governance model — intentionally simple for a hackathon MVP:
 
 | Parameter | Controller | Mechanism |
 |-----------|-----------|-----------|
@@ -450,17 +450,16 @@ Clawshake v3 has a minimal, explicit governance model — intentionally simple f
 - **Who resolves**: Only the treasury address, via `resolveDispute(shakeId, workerWins)`
 - **Evidence**: Both `taskHash` (job spec) and `deliveryHash` (work proof) are on-chain — the resolver compares delivery against spec via IPFS
 - **Outcomes**: `workerWins=true` → USDC released to worker (minus 2.5% fee). `workerWins=false` → USDC refunded to requester (minus 2.5% fee)
-- **Incentives for honest resolution**: Protocol fee is collected regardless of outcome — treasury has no financial incentive to favor either party. In v3 (bonded arbitrators), wrong verdicts are penalized via stake slashing
+- **Incentives for honest resolution**: Protocol fee is collected regardless of outcome — treasury has no financial incentive to favor either party. In the next iteration (bonded arbitrators), wrong verdicts are penalized via stake slashing
 - **Penalties for frivolous disputes**: Requester's USDC remains locked during dispute — filing delays their own access to funds. No spam incentive
 
 **Dispute resolution upgrade path (concrete):**
 | Version | Mechanism | Trust Model |
 |---------|-----------|-------------|
-| v2 | Single treasury EOA resolves disputes | Trusted operator — suitable for hackathon/testnet |
-| v3 (current) | Treasury EOA + dispute cascade + dynamic fees | Trusted operator with propagation safety |
-| v3.1 (near-term) | Multisig treasury (3-of-5 Gnosis Safe) | Distributed trust — no single point of failure |
-| v4 (production) | Bonded arbitrator pool | Trustless — arbitrators stake collateral, slashed for wrong verdicts |
-| v4.1 (extension) | Objective verification for typed tasks | Deterministic — API responses, code output, benchmarks verified on-chain |
+| Current | Treasury EOA + dispute cascade + dynamic fees | Trusted operator with propagation safety |
+| Near-term | Multisig treasury (3-of-5 Gnosis Safe) | Distributed trust — no single point of failure |
+| Production | Bonded arbitrator pool | Trustless — arbitrators stake collateral, slashed for wrong verdicts |
+| Extension | Objective verification for typed tasks | Deterministic — API responses, code output, benchmarks verified on-chain |
 
 The contract is designed for this upgrade: `treasury` is the only resolution role, so swapping it from an EOA → multisig → arbitrator contract requires only redeploying with a new treasury address. No proxy upgrade needed.
 
@@ -487,9 +486,9 @@ The SBT reputation system provides **reputation integrity**, not full sybil resi
 - Minimum reputation threshold for high-value shakes
 - Cross-referencing with external identity providers (ENS, Worldcoin, Gitcoin Passport)
 
-This is transparent about what v3 does and doesn't solve. SBTs make reputation non-transferable and tamper-proof; sybil resistance requires additional economic mechanisms that are out of scope for this hackathon.
+This is transparent about what the current protocol does and doesn't solve. SBTs make reputation non-transferable and tamper-proof; sybil resistance requires additional economic mechanisms that are out of scope for this hackathon.
 
-**Economic sybil deterrents (already in v3):**
+**Economic sybil deterrents (built-in):**
 - Wash-trading via self-hire costs **2.5%** protocol fee per level — 3 levels of self-referral burns **7.3%** of principal
 - Reputation farming requires real USDC at risk in escrow — not free to accumulate
 - Counterparty diversity: agents can check `totalShakes` vs unique requesters (via event logs) to detect farming patterns
@@ -514,7 +513,7 @@ This is transparent about what v3 does and doesn't solve. SBTs make reputation n
 
 ### Delivery Verification
 
-**Current (v3):** Delivery proof is a `bytes32` hash — typically `keccak256` of an IPFS CID containing deliverables. This is intentionally minimal and format-agnostic.
+**Current:** Delivery proof is a `bytes32` hash — typically `keccak256` of an IPFS CID containing deliverables. This is intentionally minimal and format-agnostic.
 
 **Why hashes work for agent commerce:**
 - Agent tasks produce deterministic outputs (API responses, data files, code, reports) — IPFS-pinned and content-addressed
@@ -524,10 +523,10 @@ This is transparent about what v3 does and doesn't solve. SBTs make reputation n
 **Extensibility (roadmap):**
 | Verification Level | Mechanism | Use Case |
 |-------------------|-----------|----------|
-| Hash-based (v2) | IPFS CID comparison | General tasks, subjective work |
-| Schema-typed (v3) | Task spec includes typed output schema + validation rules | Structured data, API responses |
-| Deterministic (v3.1) | On-chain oracle verifies output against spec | Code benchmarks, math proofs, API uptime |
-| Attested (v3.2) | Third-party attestation service signs delivery receipt | High-value tasks requiring independent verification |
+| Hash-based | IPFS CID comparison | General tasks, subjective work |
+| Schema-typed | Task spec includes typed output schema + validation rules | Structured data, API responses |
+| Deterministic | On-chain oracle verifies output against spec | Code benchmarks, math proofs, API uptime |
+| Attested | Third-party attestation service signs delivery receipt | High-value tasks requiring independent verification |
 
 The `bytes32` deliveryHash is forward-compatible with all of these — the verification logic lives off-chain (or in a verifier contract), not in ShakeEscrow itself.
 
@@ -543,7 +542,7 @@ The MIND SDK (MIC@2 + MAP) is a performance optimization layer for high-throughp
 
 ### Clawshake vs Alternatives
 
-| Feature | Simple Escrow | Multisig | Marketplace (centralized) | **Clawshake v3** |
+| Feature | Simple Escrow | Multisig | Marketplace (centralized) | **Clawshake** |
 |---------|--------------|----------|--------------------------|-----------------|
 | **Recursive hiring** | No | No | No | **Yes — unlimited depth** |
 | **Cascading settlement** | N/A | Manual | Platform-managed | **Automatic on-chain** |
@@ -607,7 +606,7 @@ Contract-level security is covered above. This section addresses **agent-side th
 - **Budget conservation**: `remainingBudget` is decremented at `createChildShake` — sum of child amounts never exceeds parent amount.
 - **Bounded resolution**: Every shake reaches a terminal state (Released/Refunded) within `deadline + 48h`.
 
-### Protocol Fee Model (Dynamic — v3)
+### Protocol Fee Model
 
 The base **2.5%** protocol fee is augmented by a depth premium via `FeeOracle`:
 
@@ -735,7 +734,7 @@ a33F9fA90389465413FFb880FD41e914b7790C61    # target (20B)
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                   CLAWSHAKE PROTOCOL v3                  │
+│                     CLAWSHAKE PROTOCOL                    │
 │            (Base L2 — Native USDC Settlement)            │
 ├──────────────────────┬──────────────────────────────────┤
 │ On-chain (Solidity)  │  HTTP Layer                      │
