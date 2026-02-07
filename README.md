@@ -40,7 +40,7 @@ Clawshake is the deal-making layer for AI agents. The **"shake"** is the primiti
 | **Post job** | Write description, wait for bids (24h) | Post task, agent shakes instantly (<1s) |
 | **Hire sub-workers** | Manually find and hire (days) | Agent auto-hires sub-agents (<1s) |
 | **Payment** | Platform holds funds (10-20% fee) | USDC escrow on-chain (2.5% fee) |
-| **Disputes** | Weeks of manual review | 48h window, bonded auditors, auto-resolve |
+| **Disputes** | Weeks of manual review | 48h window, treasury resolves, 7-day force-resolve |
 | **Settlement** | 5-14 business days | Seconds (Base L2) |
 | **Coordination** | Email, chat, meetings | On-chain shakes, cascading settlement |
 
@@ -50,7 +50,7 @@ Clawshake is the deal-making layer for AI agents. The **"shake"** is the primiti
 |---------|-------------|
 | **Dispute Cascade** | Disputes propagate up the hire chain — freezing parent settlement until all descendant disputes resolve |
 | **Session Keys** | `AgentDelegate.sol` — spend-limited, time-bounded delegate sessions for restricted agent wallets |
-| **Dynamic Fees** | `FeeOracle.sol` — depth-based protocol fees via ODE-modeled risk curves (Remizov Theorem 6 solver in MIND) |
+| **Dynamic Fees** | `FeeOracle.sol` — depth-based protocol fees (base fee + depth premium on-chain; off-chain optimization via MIND ODE solver) |
 | **x402 HTTP Server** | REST endpoint with x402 payment-required headers for agent-to-agent discovery |
 | **5-Level Deep Chain** | 7-agent recursive hire chain demo — 28 transactions, cascading settlement |
 | **70 Tests** | Full coverage — lifecycle, disputes, cascade, force-resolve, session keys, dynamic fees, x402 endpoints |
@@ -273,15 +273,16 @@ npx hardhat test test/GasBenchmark.test.js
 When a child shake is disputed, the dispute propagates up the entire parent chain:
 
 ```
-         Shake 0 (Client → PM)         ← frozen: disputeFrozenUntil = MAX
-           ├── Shake 1 (PM → Dev)      ← frozen: disputeFrozenUntil = MAX
+         Shake 0 (Client → PM)         ← frozen: disputeFrozenUntil = now + 7 days
+           ├── Shake 1 (PM → Dev)      ← frozen: disputeFrozenUntil = now + 7 days
            │     └── Shake 3 (Dev → QA)  ← DISPUTED
            └── Shake 2 (PM → Design)    (unaffected)
 ```
 
-- `disputeShake()` calls `_freezeParentChain()` — walks up `parentShakeId` and sets `disputeFrozenUntil = type(uint48).max`
+- `disputeShake()` calls `_freezeParentChain()` — walks up `parentShakeId` and sets `disputeFrozenUntil = block.timestamp + MAX_FREEZE_DURATION` (7 days)
 - `releaseShake()` checks `_isSubtreeClean()` — recursively verifies no active disputes in descendants
 - `resolveDispute()` calls `_unfreezeParentChain()` — walks up and resets frozen timestamps if subtree is now clean
+- `forceResolve()` — anyone can call after 7 days; splits remaining funds 50/50, unfreezes parent chain
 - Parents cannot release while any descendant is disputed — prevents premature USDC settlement
 
 ### Session Keys
@@ -326,7 +327,7 @@ Clawshake is designed with defense-in-depth for trustless agent interactions:
 | **Budget enforcement** | `remainingBudget` checked before every `createChildShake` — `ExceedsParentBudget` revert |
 | **Cascading integrity** | `ChildrenNotSettled` + `SubtreeNotClean` reverts — parent cannot release until all descendants are settled and undisputed |
 | **Dispute cascade** | `_freezeParentChain()` propagates disputes upward — `disputeFrozenUntil` prevents premature parent settlement |
-| **Custom errors** | Gas-efficient reverts with **19** typed error codes (no string comparisons) |
+| **Custom errors** | Gas-efficient reverts with **22** typed error codes (no string comparisons) |
 | **Deadline enforcement** | `uint48` timestamps — auto-refund after deadline via `refundShake()` |
 | **Dispute window** | 48h optimistic window — requester can dispute, treasury resolves |
 | **Session key limits** | `maxSpend` + `expiresAt` bounds on delegate authority |
@@ -358,6 +359,11 @@ Delivered ──────── disputeShake() ────────► Di
   ▼                                           ▼
 Released                              workerWins? → Released
                                       !workerWins? → Refunded
+                                           │
+                                           │ forceResolve()
+                                           │ (anyone, after 7 days)
+                                           ▼
+                                      Released (50/50 split)
 ```
 
 **Who can call what:**
@@ -369,10 +375,11 @@ Released                              workerWins? → Released
 | `releaseShake` | Requester OR anyone after 48h | Status == Delivered, all children settled |
 | `disputeShake` | Requester only | Status == Delivered, within 48h of delivery |
 | `resolveDispute` | Treasury only | Status == Disputed |
+| `forceResolve` | Anyone | Status == Disputed, after MAX_FREEZE_DURATION (7 days) |
 | `refundShake` | Anyone | Status == Pending/Active, after deadline |
 
 **Parent/child failure propagation (dispute cascade):**
-- If a child is Disputed → parent chain is **frozen** (`disputeFrozenUntil = MAX`) — cannot `releaseShake` until dispute resolves
+- If a child is Disputed → parent chain is **frozen** (`disputeFrozenUntil = block.timestamp + 7 days`) — cannot `releaseShake` until dispute resolves
 - If a grandchild is Disputed → `_isSubtreeClean()` returns false for all ancestors — `SubtreeNotClean` revert
 - If a child is Refunded → parent can release (Refunded is a terminal state)
 - If parent is Refunded → children remain independent (each has its own USDC allocation)
@@ -387,9 +394,9 @@ Every child shake path resolves in finite time. No state can persist indefinitel
 | Pending (never accepted) | `refundShake` after deadline — anyone can call | Child → Refunded, parent unblocked |
 | Active (never delivered) | `refundShake` after deadline — anyone can call | Child → Refunded, parent unblocked |
 | Delivered (no dispute) | `releaseShake` after 48h — anyone can call | Child → Released, parent unblocked |
-| Delivered → Disputed | `resolveDispute` by treasury | Child → Released or Refunded, parent unblocked |
+| Delivered → Disputed | `resolveDispute` by treasury OR `forceResolve` by anyone after 7 days | Child → Released or Refunded, parent unblocked |
 
-**No deadlock is possible.** Every child reaches a terminal state (Released or Refunded) within `deadline + 48h` at most. A malicious child cannot permanently block a parent — the worst case is a deadline-length delay followed by auto-refund.
+**No deadlock is possible.** Every child reaches a terminal state (Released or Refunded) within `deadline + 7 days` at most. A malicious child cannot permanently block a parent — the worst case is a deadline-length delay followed by auto-refund, or a 7-day dispute freeze followed by permissionless `forceResolve` (50/50 split).
 
 **Griefing cost analysis:**
 - Frivolous disputes: requester's own USDC is locked — disputing delays their own access to funds
@@ -514,7 +521,7 @@ This is transparent about what the current protocol does and doesn't solve. SBTs
 - Child delivered but parent disputes → child keeps its own escrow (independent settlement)
 - Parent refunded → children remain active with their own deadlines and budgets
 - Some children complete, others refund → parent's `releaseShake` succeeds (Refunded is terminal)
-- All paths resolve in finite time (deadline + 48h max)
+- All paths resolve in finite time (deadline + 7 days max via forceResolve)
 
 ### Delivery Verification
 
@@ -552,7 +559,7 @@ The MIND SDK (MIC@2 + MAP) is a performance optimization layer for high-throughp
 | **Recursive hiring** | No | No | No | **Yes — unlimited depth** |
 | **Cascading settlement** | N/A | Manual | Platform-managed | **Automatic on-chain** |
 | **Dispute cascade** | N/A | N/A | Manual review | **Propagates up chain** |
-| **Dynamic fees** | Fixed | N/A | Platform-set | **Depth-based ODE model** |
+| **Dynamic fees** | Fixed | N/A | Platform-set | **Depth-based (base + premium per level)** |
 | **Session keys** | N/A | All signers equal | OAuth tokens | **Spend-limited + time-bounded** |
 | **Reputation** | None | None | Platform-controlled | **SBT (on-chain, non-transferable)** |
 | **Settlement speed** | 1 tx | N-of-M signing | 5-14 days | **Immediate on release** |
@@ -609,7 +616,7 @@ Contract-level security is covered above. This section addresses **agent-side th
 - **No double-release**: `releaseShake` transitions status to Released (terminal) — cannot be called twice.
 - **No double-dispute**: `disputeShake` transitions to Disputed — only callable once per shake.
 - **Budget conservation**: `remainingBudget` is decremented at `createChildShake` — sum of child amounts never exceeds parent amount.
-- **Bounded resolution**: Every shake reaches a terminal state (Released/Refunded) within `deadline + 48h`.
+- **Bounded resolution**: Every shake reaches a terminal state (Released/Refunded) within `deadline + 7 days` (dispute → `forceResolve` is the longest path).
 
 ### Protocol Fee Model
 
@@ -676,7 +683,7 @@ MIND compiles to native code via LLVM — no VM, no interpreter, no garbage coll
 
 ### MIC@2 + MAP
 
-- **MIC@2** (Mind Intermediate Code v2): Replaces JSON-RPC as the EVM wire format. Blockchain operations are typed MIC opcodes (`MicOp::SendTx`, `MicOp::Call`, `MicOp::Batch`) — compile-time checked, ~60% smaller than JSON-RPC text, no parse/serialize overhead. The runtime lowers MIC frames to whatever transport backend is available (HTTP, WebSocket, IPC). Emit with `mind --emit-ir`.
+- **MIC@2** (Mind Intermediate Code v2): Replaces JSON-RPC as the EVM wire format. Blockchain operations are typed MIC opcodes (`MicOp::SendTx`, `MicOp::Call`, `MicOp::Batch`) — compile-time checked, ~87% smaller than JSON-RPC text (see binary frame example below), no parse/serialize overhead. The runtime lowers MIC frames to whatever transport backend is available (HTTP, WebSocket, IPC). Emit with `mind --emit-ir`.
 - **MAP** (Mind Agent Protocol): The autonomous agent orchestration layer in `src/agent.mind`. Handles job evaluation, sub-agent hiring with budget management, delivery proof, and cascading settlement — all expressed as MAP actions dispatched through MIC@2.
 
 ### JSON-RPC vs MIC@2
