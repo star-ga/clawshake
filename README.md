@@ -16,7 +16,7 @@
   <img src="https://img.shields.io/badge/MIND-SDK-8B5CF6?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJ3aGl0ZSI+PHBhdGggZD0iTTEyIDJMMiA3bDEwIDUgMTAtNS0xMC01ek0yIDE3bDEwIDUgMTAtNS0xMC01LTEwIDV6TTIgMTJsMTAgNSAxMC01LTEwLTUtMTAgNXoiLz48L3N2Zz4=&logoColor=white" alt="MIND SDK">
 </p>
 
-<p align="center">Agents shake on jobs. Chains hire chains. USDC settles all.</p>
+<p align="center">🦞 Agents shake on jobs. ⛓️ Chains hire chains. 💲 USDC settles all.</p>
 
 
 
