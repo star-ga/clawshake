@@ -51,14 +51,16 @@ contract ShakeEscrow is ReentrancyGuard {
     error ChildrenNotSettled();
     error ChildDisputed();
     error SubtreeNotClean();
+    error FreezeDurationNotExpired();
 
     // --- State ---
     IERC20 public immutable usdc;
     IAgentRegistry public registry;
     IFeeOracle public feeOracle;
     address public treasury;
-    uint256 public protocolFeeBps = 250; // 2.5% (fallback when no oracle)
-    uint48 public disputeWindow = 48 hours;
+    uint256 public constant protocolFeeBps = 250; // 2.5% (fallback when no oracle)
+    uint48 public constant disputeWindow = 48 hours;
+    uint48 public constant MAX_FREEZE_DURATION = 7 days;
 
     uint256 public nextShakeId;
 
@@ -83,6 +85,7 @@ contract ShakeEscrow is ReentrancyGuard {
     mapping(uint256 => Shake) public shakes;
     mapping(uint256 => uint256[]) public childShakes;     // parent -> children
     mapping(uint256 => uint256) public remainingBudget;   // shakeId -> remaining USDC budget for child hires
+    mapping(uint256 => uint48) public disputedAt;          // shakeId -> timestamp when dispute was raised
 
     // --- Events ---
     event ShakeCreated(uint256 indexed shakeId, address indexed requester, uint256 amount, bytes32 taskHash);
@@ -97,6 +100,7 @@ contract ShakeEscrow is ReentrancyGuard {
     event FeeOracleUpdated(address indexed newOracle);
     event ParentFrozen(uint256 indexed parentShakeId, uint256 indexed childShakeId);
     event ParentUnfrozen(uint256 indexed parentShakeId);
+    event ForceResolved(uint256 indexed shakeId);
 
     constructor(address _usdc, address _treasury) {
         usdc = IERC20(_usdc);
@@ -296,6 +300,7 @@ contract ShakeEscrow is ReentrancyGuard {
         if (block.timestamp >= s.deliveredAt + disputeWindow) revert DisputeWindowClosed();
 
         s.status = ShakeStatus.Disputed;
+        disputedAt[shakeId] = uint48(block.timestamp);
         emit ShakeDisputed(shakeId, msg.sender);
 
         // Freeze parent chain — walk up and extend dispute windows
@@ -316,27 +321,57 @@ contract ShakeEscrow is ReentrancyGuard {
             uint256 workerNet = s.amount - childSpend - fee;
 
             s.status = ShakeStatus.Released;
+
+            // CEI: state changes + events before external calls
+            emit ShakeReleased(shakeId, workerNet, fee);
+            emit DisputeResolved(shakeId, workerWins);
+            _unfreezeParentChain(shakeId);
+
             if (workerNet > 0) usdc.safeTransfer(s.worker, workerNet);
             if (fee > 0) usdc.safeTransfer(treasury, fee);
 
             if (address(registry) != address(0)) {
                 registry.recordShake(s.worker, workerNet, true);
             }
-            emit ShakeReleased(shakeId, workerNet, fee);
         } else {
             s.status = ShakeStatus.Refunded;
+
+            // CEI: state changes + events before external calls
+            emit ShakeRefunded(shakeId);
+            emit DisputeResolved(shakeId, workerWins);
+            _unfreezeParentChain(shakeId);
+
             usdc.safeTransfer(s.requester, s.amount - (s.amount - remainingBudget[shakeId]));
 
             if (address(registry) != address(0)) {
                 registry.recordShake(s.worker, 0, false);
             }
-            emit ShakeRefunded(shakeId);
         }
+    }
 
-        emit DisputeResolved(shakeId, workerWins);
+    /// @notice Force-resolve a stale dispute after MAX_FREEZE_DURATION — prevents grief-freeze attacks.
+    /// @dev Anyone can call once the freeze window expires. Splits remaining funds 50/50.
+    function forceResolve(uint256 shakeId) external nonReentrant {
+        Shake storage s = shakes[shakeId];
+        if (s.status != ShakeStatus.Disputed) revert NotDisputed();
+        if (uint48(block.timestamp) < disputedAt[shakeId] + MAX_FREEZE_DURATION) revert FreezeDurationNotExpired();
 
-        // Unfreeze parent chain if subtree is now clean
+        uint256 available = remainingBudget[shakeId];
+        uint256 workerShare = available / 2;
+        uint256 requesterShare = available - workerShare;
+
+        s.status = ShakeStatus.Released;
+
+        // CEI: state changes before external calls
+        emit ForceResolved(shakeId);
         _unfreezeParentChain(shakeId);
+
+        if (workerShare > 0) usdc.safeTransfer(s.worker, workerShare);
+        if (requesterShare > 0) usdc.safeTransfer(s.requester, requesterShare);
+
+        if (address(registry) != address(0)) {
+            registry.recordShake(s.worker, workerShare, false);
+        }
     }
 
     /// @notice Refund if deadline passes without acceptance or delivery
@@ -421,7 +456,7 @@ contract ShakeEscrow is ReentrancyGuard {
             Shake storage parent = shakes[parentId];
             // Freeze: set disputeFrozenUntil to max so window cannot expire
             if (parent.status == ShakeStatus.Delivered || parent.status == ShakeStatus.Active) {
-                parent.disputeFrozenUntil = type(uint48).max;
+                parent.disputeFrozenUntil = uint48(block.timestamp) + MAX_FREEZE_DURATION;
                 emit ParentFrozen(parentId, childShakeId);
             }
             if (!parent.isChildShake) break;

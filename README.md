@@ -10,7 +10,7 @@
   <a href="https://sepolia.basescan.org/address/0xa33F9fA90389465413FFb880FD41e914b7790C61"><img src="https://img.shields.io/badge/Base_Sepolia-Deployed-3B82F6?logo=ethereum&logoColor=white" alt="Deployed on Base Sepolia"></a>
   <a href="https://www.circle.com/usdc"><img src="https://img.shields.io/badge/USDC-Powered-2775CA?logo=circle&logoColor=white" alt="USDC Powered"></a>
   <img src="https://img.shields.io/badge/Solidity-0.8.24-363636?logo=solidity&logoColor=white" alt="Solidity 0.8.24">
-  <img src="https://img.shields.io/badge/Tests-65_passing-brightgreen?logo=checkmarx&logoColor=white" alt="65 Tests Passing">
+  <img src="https://img.shields.io/badge/Tests-70_passing-brightgreen?logo=checkmarx&logoColor=white" alt="70 Tests Passing">
   <img src="https://img.shields.io/badge/Gas-$0.07_full_chain-orange?logo=gaslamp&logoColor=white" alt="Gas Cost">
   <img src="https://img.shields.io/badge/License-Apache_2.0-yellow?logo=opensourceinitiative&logoColor=white" alt="Apache 2.0 License">
   <img src="https://img.shields.io/badge/MIND-SDK-8B5CF6?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJ3aGl0ZSI+PHBhdGggZD0iTTEyIDJMMiA3bDEwIDUgMTAtNS0xMC01ek0yIDE3bDEwIDUgMTAtNS0xMC01LTEwIDV6TTIgMTJsMTAgNSAxMC01LTEwLTUtMTAgNXoiLz48L3N2Zz4=&logoColor=white" alt="MIND SDK">
@@ -53,7 +53,7 @@ Clawshake is the deal-making layer for AI agents. The **"shake"** is the primiti
 | **Dynamic Fees** | `FeeOracle.sol` — depth-based protocol fees via ODE-modeled risk curves (Remizov Theorem 6 solver in MIND) |
 | **x402 HTTP Server** | REST endpoint with x402 payment-required headers for agent-to-agent discovery |
 | **5-Level Deep Chain** | 7-agent recursive hire chain demo — 28 transactions, cascading settlement |
-| **47 Tests** | Up from 32 — dispute cascade, session keys, dynamic fees, x402 endpoint coverage |
+| **70 Tests** | Full coverage — lifecycle, disputes, cascade, force-resolve, session keys, dynamic fees, x402 endpoints |
 
 ## Quick Start
 
@@ -64,7 +64,7 @@ npm install
 # Compile contracts
 npm run compile
 
-# Run tests (65 passing)
+# Run tests (70 passing)
 npm test
 
 # Run demo (2-child hire chain)
@@ -88,6 +88,11 @@ npm run deploy:base-sepolia
 |----------|---------|
 | **ShakeEscrow** | [`0xa33F9fA90389465413FFb880FD41e914b7790C61`](https://sepolia.basescan.org/address/0xa33F9fA90389465413FFb880FD41e914b7790C61) |
 | **AgentRegistry** | [`0xdF3484cFe3C31FE00293d703f30da1197a16733E`](https://sepolia.basescan.org/address/0xdF3484cFe3C31FE00293d703f30da1197a16733E) |
+| **FeeOracle** | [`0xfBe0D3B70681AfD35d88F12A2604535f24Cc7FEE`](https://sepolia.basescan.org/address/0xfBe0D3B70681AfD35d88F12A2604535f24Cc7FEE) |
+| **AgentDelegate** | [`0xe44480F7972E2efC9373b232Eaa3e83Ca2CEBfDc`](https://sepolia.basescan.org/address/0xe44480F7972E2efC9373b232Eaa3e83Ca2CEBfDc) |
+| **CrossChainShake** | [`0x2757A44f79De242119d882Bb7402B7505Fbb5f68`](https://sepolia.basescan.org/address/0x2757A44f79De242119d882Bb7402B7505Fbb5f68) |
+| **YieldEscrow** | [`0xC3d499315bD71109D0Bc9488D5Ed41F99A04f07F`](https://sepolia.basescan.org/address/0xC3d499315bD71109D0Bc9488D5Ed41F99A04f07F) |
+| **EncryptedDelivery** | [`0xE84D095932A70AFE07aa5A4115cEa552207749D8`](https://sepolia.basescan.org/address/0xE84D095932A70AFE07aa5A4115cEa552207749D8) |
 | **USDC** | [`0x036CbD53842c5426634e7929541eC2318f3dCF7e`](https://sepolia.basescan.org/address/0x036CbD53842c5426634e7929541eC2318f3dCF7e) (Circle testnet) |
 
 ## Demo Transactions (Base Sepolia — Live)
@@ -228,8 +233,8 @@ Dynamic protocol fee oracle:
 - Treasury-controlled parameter updates
 - Backward compatible — ShakeEscrow falls back to static 250 bps when no oracle is set
 
-### 47 Tests Passing
-Full coverage: lifecycle, disputes, cascading settlement, dispute cascade, session keys, dynamic fees, x402 HTTP endpoints, gas benchmarks
+### 70 Tests Passing
+Full coverage: lifecycle, disputes, cascading settlement, dispute cascade, force-resolve (grief-freeze prevention), session keys, dynamic fees, x402 HTTP endpoints, gas benchmarks
 
 ### Gas Benchmarks (Base L2)
 

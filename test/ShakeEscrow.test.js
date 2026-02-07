@@ -499,6 +499,97 @@ describe("ShakeEscrow", function () {
     });
   });
 
+  describe("Force Resolve (Grief-Freeze Prevention)", function () {
+    beforeEach(async function () {
+      const taskHash = ethers.id("Frozen dispute task");
+      await escrow.connect(requester).createShake(AMOUNT, 86400, taskHash);
+      await escrow.connect(worker).acceptShake(0);
+      await escrow.connect(worker).deliverShake(0, ethers.id("proof"));
+      await escrow.connect(requester).disputeShake(0);
+    });
+
+    it("reverts before MAX_FREEZE_DURATION expires", async function () {
+      // Try immediately — should fail
+      await expect(
+        escrow.connect(outsider).forceResolve(0)
+      ).to.be.revertedWithCustomError(escrow, "FreezeDurationNotExpired");
+
+      // 6 days — still fails
+      await ethers.provider.send("evm_increaseTime", [6 * 86400]);
+      await ethers.provider.send("evm_mine");
+      await expect(
+        escrow.connect(outsider).forceResolve(0)
+      ).to.be.revertedWithCustomError(escrow, "FreezeDurationNotExpired");
+    });
+
+    it("splits funds 50/50 after MAX_FREEZE_DURATION", async function () {
+      // Fast forward 7 days + 1 second
+      await ethers.provider.send("evm_increaseTime", [7 * 86400 + 1]);
+      await ethers.provider.send("evm_mine");
+
+      const workerBefore = await usdc.balanceOf(worker.address);
+      const requesterBefore = await usdc.balanceOf(requester.address);
+
+      await escrow.connect(outsider).forceResolve(0);
+
+      const workerAfter = await usdc.balanceOf(worker.address);
+      const requesterAfter = await usdc.balanceOf(requester.address);
+
+      // 500 USDC split: 250 each
+      expect(workerAfter - workerBefore).to.equal(AMOUNT / 2);
+      expect(requesterAfter - requesterBefore).to.equal(AMOUNT / 2);
+
+      const shake = await escrow.getShake(0);
+      expect(shake.status).to.equal(3); // Released
+    });
+
+    it("anyone can call forceResolve — not just treasury", async function () {
+      await ethers.provider.send("evm_increaseTime", [7 * 86400 + 1]);
+      await ethers.provider.send("evm_mine");
+
+      // Outsider triggers — this is intentional (permissionless escape hatch)
+      await escrow.connect(outsider).forceResolve(0);
+      expect((await escrow.getShake(0)).status).to.equal(3);
+    });
+
+    it("records failed reputation on force-resolve", async function () {
+      await ethers.provider.send("evm_increaseTime", [7 * 86400 + 1]);
+      await ethers.provider.send("evm_mine");
+
+      await escrow.connect(outsider).forceResolve(0);
+
+      const passport = await registry.getPassport(worker.address);
+      expect(passport.totalShakes).to.equal(1);
+      expect(passport.disputesLost).to.equal(1);
+    });
+
+    it("unfreezes parent chain on force-resolve", async function () {
+      await usdc.faucet(subWorker.address, 5000_000000);
+
+      // Create parent with child
+      await escrow.connect(requester).createShake(AMOUNT, 86400, ethers.id("parent"));
+      await escrow.connect(worker).acceptShake(1);
+      await escrow.connect(worker).createChildShake(1, 200_000000, 86400, ethers.id("child"));
+      await escrow.connect(subWorker).acceptShake(2);
+
+      // Deliver and dispute child
+      await escrow.connect(subWorker).deliverShake(2, ethers.id("proof2"));
+      await escrow.connect(worker).disputeShake(2);
+
+      // Parent should be frozen
+      expect((await escrow.getShake(1)).disputeFrozenUntil).to.be.greaterThan(0);
+
+      // Force resolve after 7 days
+      await ethers.provider.send("evm_increaseTime", [7 * 86400 + 1]);
+      await ethers.provider.send("evm_mine");
+
+      await escrow.connect(outsider).forceResolve(2);
+
+      // Parent should be unfrozen
+      expect((await escrow.getShake(1)).disputeFrozenUntil).to.equal(0);
+    });
+  });
+
   describe("FeeOracle (Dynamic Fees)", function () {
     let oracle;
 

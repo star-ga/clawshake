@@ -160,21 +160,25 @@ contract AgentRegistry {
     }
 
     /// @notice Get top agents by success rate (minimum 5 completed shakes)
+    /// @dev Bounded O(N*K) partial sort, capped at 50 results. Designed for off-chain reads (eth_call).
     function getTopAgents(uint256 count) external view returns (address[] memory) {
         uint256 total = registeredAgents.length;
+        if (count > 50) count = 50; // gas cap — use off-chain indexer for larger sets
         if (count > total) count = total;
 
-        // Collect eligible agents (min 5 shakes)
-        address[] memory eligible = new address[](total);
+        // Collect eligible agents (min 5 shakes), cap scan at 500
+        uint256 scanLimit = total > 500 ? 500 : total;
+        address[] memory eligible = new address[](scanLimit);
         uint256 eligibleCount = 0;
-        for (uint256 i = 0; i < total; i++) {
+        for (uint256 i = 0; i < scanLimit; i++) {
             if (passports[registeredAgents[i]].totalShakes >= 5) {
                 eligible[eligibleCount++] = registeredAgents[i];
             }
         }
 
-        // Simple selection sort for top N by successRate
-        for (uint256 i = 0; i < count && i < eligibleCount; i++) {
+        // Partial selection sort — only sort top `count` elements: O(N*K)
+        uint256 sortCount = count < eligibleCount ? count : eligibleCount;
+        for (uint256 i = 0; i < sortCount; i++) {
             uint256 bestIdx = i;
             for (uint256 j = i + 1; j < eligibleCount; j++) {
                 if (passports[eligible[j]].successRate > passports[eligible[bestIdx]].successRate) {
@@ -187,9 +191,8 @@ contract AgentRegistry {
         }
 
         // Return top N
-        uint256 resultCount = count < eligibleCount ? count : eligibleCount;
-        address[] memory result = new address[](resultCount);
-        for (uint256 i = 0; i < resultCount; i++) {
+        address[] memory result = new address[](sortCount);
+        for (uint256 i = 0; i < sortCount; i++) {
             result[i] = eligible[i];
         }
         return result;
