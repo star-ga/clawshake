@@ -56,6 +56,8 @@ contract CrossChainShake is ReentrancyGuard {
     error RequestNotFound();
     error RequestAlreadyFulfilled();
     error NotInitiator();
+    error ZeroAddress();
+    error InsufficientBalance();
 
     // --- State ---
     IERC20 public immutable usdc;
@@ -94,6 +96,9 @@ contract CrossChainShake is ReentrancyGuard {
         address _escrow,
         uint32 _localDomain
     ) {
+        if (_usdc == address(0)) revert ZeroAddress();
+        if (_tokenMessenger == address(0)) revert ZeroAddress();
+        if (_escrow == address(0)) revert ZeroAddress();
         usdc = IERC20(_usdc);
         tokenMessenger = ITokenMessenger(_tokenMessenger);
         escrow = IShakeEscrow(_escrow);
@@ -163,6 +168,9 @@ contract CrossChainShake is ReentrancyGuard {
         if (req.fulfilled) revert RequestAlreadyFulfilled();
 
         req.fulfilled = true;
+
+        // Verify USDC arrived via CCTP before proceeding
+        if (usdc.balanceOf(address(this)) < req.amount) revert InsufficientBalance();
 
         // Approve escrow to pull USDC (minted by CCTP)
         usdc.approve(address(escrow), req.amount);

@@ -16,18 +16,22 @@ contract FeeOracle {
     // --- Custom Errors ---
     error NotTreasury();
     error FeeTooHigh();
+    error FeeTooLow();
+    error ZeroAddress();
 
     // --- State ---
     address public treasury;
     uint256 public baseFeeBps = 250;         // Default 2.5% (matches original static fee)
     uint256 public depthPremiumBps = 25;     // +0.25% per depth level
     uint256 public constant MAX_FEE_BPS = 1000; // Cap at 10%
+    uint256 public constant MIN_FEE_BPS = 10;  // Floor at 0.1%
 
     // --- Events ---
     event BaseFeeUpdated(uint256 oldFee, uint256 newFee);
     event DepthPremiumUpdated(uint256 oldPremium, uint256 newPremium);
 
     constructor(address _treasury) {
+        if (_treasury == address(0)) revert ZeroAddress();
         treasury = _treasury;
     }
 
@@ -39,6 +43,7 @@ contract FeeOracle {
     /// @notice Update base fee — called by treasury after off-chain ODE solver runs
     /// @param newFeeBps New base fee in basis points
     function updateFee(uint256 newFeeBps) external onlyTreasury {
+        if (newFeeBps < MIN_FEE_BPS) revert FeeTooLow();
         if (newFeeBps > MAX_FEE_BPS) revert FeeTooHigh();
         uint256 old = baseFeeBps;
         baseFeeBps = newFeeBps;

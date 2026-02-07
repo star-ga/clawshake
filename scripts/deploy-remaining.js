@@ -64,7 +64,7 @@ async function main() {
   // 5. EncryptedDelivery
   console.log("\n--- Deploying EncryptedDelivery ---");
   const EncryptedDelivery = await hre.ethers.getContractFactory("EncryptedDelivery");
-  const encrypted = await EncryptedDelivery.deploy();
+  const encrypted = await EncryptedDelivery.deploy(ESCROW);
   await encrypted.waitForDeployment();
   addresses.encryptedDelivery = await encrypted.getAddress();
   console.log("EncryptedDelivery:", addresses.encryptedDelivery);

@@ -2,6 +2,29 @@
 pragma solidity ^0.8.24;
 
 /**
+ * @title IShakeEscrowMinimal
+ * @notice Minimal interface to look up shake workers from ShakeEscrow
+ */
+interface IShakeEscrowMinimal {
+    struct Shake {
+        address requester;
+        address worker;
+        uint256 amount;
+        uint256 parentShakeId;
+        uint48 deadline;
+        uint48 deliveredAt;
+        uint8 status;
+        bytes32 taskHash;
+        bytes32 deliveryHash;
+        bool isChildShake;
+        uint48 disputeFrozenUntil;
+        bytes32 requesterPubKeyHash;
+        bytes32 encryptedDeliveryKey;
+    }
+    function getShake(uint256 shakeId) external view returns (Shake memory);
+}
+
+/**
  * @title EncryptedDelivery
  * @notice Extension for encrypted delivery proofs — only the requester can decrypt.
  *
@@ -30,6 +53,7 @@ contract EncryptedDelivery {
     error DeliveryAlreadyStored();
     error NotWorker();
     error EmptyPayload();
+    error ZeroAddress();
 
     struct EncryptedProof {
         bytes32 shakeId;
@@ -44,9 +68,16 @@ contract EncryptedDelivery {
     mapping(uint256 => EncryptedProof) public proofs;
     mapping(address => bytes) public requesterPubKeys; // Requester's ECIES public key
 
+    IShakeEscrowMinimal public immutable escrow;
+
     // --- Events ---
     event PubKeyRegistered(address indexed requester, bytes pubKey);
     event EncryptedDeliveryStored(uint256 indexed shakeId, address indexed worker, uint48 storedAt);
+
+    constructor(address _escrow) {
+        if (_escrow == address(0)) revert ZeroAddress();
+        escrow = IShakeEscrowMinimal(_escrow);
+    }
 
     /**
      * @notice Register a public key for receiving encrypted deliveries
@@ -74,6 +105,9 @@ contract EncryptedDelivery {
     ) external {
         if (proofs[shakeId].storedAt != 0) revert DeliveryAlreadyStored();
         if (ciphertextHash == bytes32(0)) revert EmptyPayload();
+        // Verify msg.sender is the actual worker for this shake
+        IShakeEscrowMinimal.Shake memory s = escrow.getShake(shakeId);
+        if (msg.sender != s.worker) revert NotWorker();
 
         proofs[shakeId] = EncryptedProof({
             shakeId: bytes32(shakeId),

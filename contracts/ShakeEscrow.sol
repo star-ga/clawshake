@@ -54,6 +54,7 @@ contract ShakeEscrow is ReentrancyGuard {
     error FreezeDurationNotExpired();
     error TooManyChildren();
     error SelfDeal();
+    error ZeroAddress();
 
     // --- State ---
     IERC20 public immutable usdc;
@@ -106,6 +107,8 @@ contract ShakeEscrow is ReentrancyGuard {
     event ForceResolved(uint256 indexed shakeId);
 
     constructor(address _usdc, address _treasury) {
+        if (_usdc == address(0)) revert ZeroAddress();
+        if (_treasury == address(0)) revert ZeroAddress();
         usdc = IERC20(_usdc);
         treasury = _treasury;
     }

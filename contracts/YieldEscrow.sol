@@ -38,6 +38,8 @@ contract YieldEscrow is ReentrancyGuard {
     error AlreadyWithdrawn();
     error NotAuthorized();
     error NotTreasury();
+    error ZeroAddress();
+    error SlippageExceeded();
 
     // --- Constants ---
     uint256 public constant WORKER_YIELD_BPS = 8000;    // 80%
@@ -66,6 +68,8 @@ contract YieldEscrow is ReentrancyGuard {
     event VaultUpdated(address indexed newVault);
 
     constructor(address _usdc, address _vault, address _treasury) {
+        if (_usdc == address(0)) revert ZeroAddress();
+        if (_treasury == address(0)) revert ZeroAddress();
         usdc = IERC20(_usdc);
         treasury = _treasury;
         if (_vault != address(0)) {
@@ -88,7 +92,7 @@ contract YieldEscrow is ReentrancyGuard {
      * @param amount USDC to deposit (6 decimals)
      * @return depositId Identifier for this yield deposit
      */
-    function depositToVault(uint256 amount) external nonReentrant returns (uint256 depositId) {
+    function depositToVault(uint256 amount, uint256 minShares) external nonReentrant returns (uint256 depositId) {
         if (amount == 0) revert AmountZero();
         if (address(vault) == address(0)) revert VaultNotSet();
 
@@ -96,6 +100,7 @@ contract YieldEscrow is ReentrancyGuard {
 
         usdc.approve(address(vault), amount);
         uint256 shares = vault.deposit(amount, address(this));
+        if (shares < minShares) revert SlippageExceeded();
 
         depositId = nextDepositId++;
         deposits[depositId] = YieldDeposit({
@@ -115,7 +120,7 @@ contract YieldEscrow is ReentrancyGuard {
      * @param depositId The deposit to withdraw
      * @param worker Address of the worker to receive principal + worker yield
      */
-    function withdrawFromVault(uint256 depositId, address worker) external nonReentrant {
+    function withdrawFromVault(uint256 depositId, address worker, uint256 minAssets) external nonReentrant {
         YieldDeposit storage d = deposits[depositId];
         if (d.depositor == address(0)) revert DepositNotFound();
         if (d.withdrawn) revert AlreadyWithdrawn();
@@ -125,6 +130,7 @@ contract YieldEscrow is ReentrancyGuard {
 
         // Redeem all shares
         uint256 totalAssets = vault.redeem(d.shares, address(this), address(this));
+        if (totalAssets < minAssets) revert SlippageExceeded();
 
         // Calculate yield (handle vault losses gracefully)
         uint256 yieldEarned = 0;

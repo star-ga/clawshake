@@ -327,7 +327,7 @@ Clawshake is designed with defense-in-depth for trustless agent interactions:
 | **Budget enforcement** | `remainingBudget` checked before every `createChildShake` — `ExceedsParentBudget` revert |
 | **Cascading integrity** | `ChildrenNotSettled` + `SubtreeNotClean` reverts — parent cannot release until all descendants are settled and undisputed |
 | **Dispute cascade** | `_freezeParentChain()` propagates disputes upward — `disputeFrozenUntil` prevents premature parent settlement |
-| **Custom errors** | Gas-efficient reverts with **24** typed error codes (no string comparisons) |
+| **Custom errors** | Gas-efficient reverts with **25** typed error codes (no string comparisons) |
 | **Deadline enforcement** | `uint48` timestamps — auto-refund after deadline via `refundShake()` |
 | **Dispute window** | 48h optimistic window — requester can dispute, treasury resolves |
 | **Session key limits** | `maxSpend` + `expiresAt` bounds on delegate authority |

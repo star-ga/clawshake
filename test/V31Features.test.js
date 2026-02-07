@@ -147,7 +147,7 @@ describe("v3.1 Features", function () {
 
     it("deposits escrowed USDC into vault", async function () {
       const depositAmount = ethers.parseUnits("500", 6);
-      await yieldEscrow.connect(requester).depositToVault(depositAmount);
+      await yieldEscrow.connect(requester).depositToVault(depositAmount, 0);
 
       const deposit = await yieldEscrow.getDeposit(0);
       expect(deposit.depositor).to.equal(requester.address);
@@ -158,7 +158,7 @@ describe("v3.1 Features", function () {
 
     it("accrues yield over time", async function () {
       const depositAmount = ethers.parseUnits("1000", 6);
-      await yieldEscrow.connect(requester).depositToVault(depositAmount);
+      await yieldEscrow.connect(requester).depositToVault(depositAmount, 0);
 
       // Simulate 50 USDC yield (5%)
       const yieldAmount = ethers.parseUnits("50", 6);
@@ -172,7 +172,7 @@ describe("v3.1 Features", function () {
 
     it("distributes yield correctly on release: 80/15/5", async function () {
       const depositAmount = ethers.parseUnits("1000", 6);
-      await yieldEscrow.connect(requester).depositToVault(depositAmount);
+      await yieldEscrow.connect(requester).depositToVault(depositAmount, 0);
 
       // Simulate 100 USDC yield (10%)
       const yieldAmount = ethers.parseUnits("100", 6);
@@ -186,7 +186,7 @@ describe("v3.1 Features", function () {
       const treasuryBefore = await usdc.balanceOf(deployer.address);
 
       // Withdraw: worker gets principal + 80% yield
-      await yieldEscrow.connect(requester).withdrawFromVault(0, worker1.address);
+      await yieldEscrow.connect(requester).withdrawFromVault(0, worker1.address, 0);
 
       const workerAfter = await usdc.balanceOf(worker1.address);
       const requesterAfter = await usdc.balanceOf(requester.address);
@@ -202,10 +202,10 @@ describe("v3.1 Features", function () {
 
     it("handles vault with zero yield gracefully", async function () {
       const depositAmount = ethers.parseUnits("500", 6);
-      await yieldEscrow.connect(requester).depositToVault(depositAmount);
+      await yieldEscrow.connect(requester).depositToVault(depositAmount, 0);
 
       const workerBefore = await usdc.balanceOf(worker1.address);
-      await yieldEscrow.connect(requester).withdrawFromVault(0, worker1.address);
+      await yieldEscrow.connect(requester).withdrawFromVault(0, worker1.address, 0);
       const workerAfter = await usdc.balanceOf(worker1.address);
 
       // Worker gets exact principal back
@@ -213,10 +213,10 @@ describe("v3.1 Features", function () {
     });
 
     it("reverts on double withdrawal", async function () {
-      await yieldEscrow.connect(requester).depositToVault(ethers.parseUnits("100", 6));
-      await yieldEscrow.connect(requester).withdrawFromVault(0, worker1.address);
+      await yieldEscrow.connect(requester).depositToVault(ethers.parseUnits("100", 6), 0);
+      await yieldEscrow.connect(requester).withdrawFromVault(0, worker1.address, 0);
 
-      await expect(yieldEscrow.connect(requester).withdrawFromVault(0, worker1.address))
+      await expect(yieldEscrow.connect(requester).withdrawFromVault(0, worker1.address, 0))
         .to.be.revertedWithCustomError(yieldEscrow, "AlreadyWithdrawn");
     });
   });
