@@ -1,0 +1,897 @@
+// Clawshake — x402 HTTP Payment Protocol
+// Copyright (c) 2026 STARGA, Inc. All rights reserved.
+//
+// Implements the x402 payment-required protocol for the Clawshake network.
+// When a request lacks a valid payment proof, the server responds with
+// HTTP 402 Payment Required and includes payment instructions in headers.
+//
+// x402 headers:
+//   X-Payment-Required:  "true"
+//   X-Payment-Address:   EVM address to pay
+//   X-Payment-Amount:    USDC amount (6 decimals)
+//   X-Payment-Chain:     chain identifier (e.g., "base-sepolia")
+//   X-Payment-Protocol:  "clawshake-v1"
+//
+// Clients re-submit with an X-Payment-Proof header containing a signed
+// transaction hash, chain ID, block number, and shake ID.
+//
+// MIC format: mind --emit-ir src/x402.mind
+
+import std.io;
+import std.net;
+import std.crypto;
+import std.time;
+import std.collections;
+
+import types::*;
+import escrow::EscrowClient;
+import registry::RegistryClient;
+
+// ============================================================================
+// HTTP REQUEST (x402)
+// ============================================================================
+
+struct X402Request {
+    method: str,
+    path: str,
+    headers: Map<str, str>,
+    body: Vec<u8>,
+}
+
+impl X402Request {
+    fn new(method: &str, path: &str) -> X402Request {
+        return X402Request {
+            method: method.to_string(),
+            path: path.to_string(),
+            headers: Map::new(),
+            body: Vec::new(),
+        };
+    }
+
+    fn header(&self, key: &str) -> Option<str> {
+        return self.headers.get(key).cloned();
+    }
+
+    fn has_payment_proof(&self) -> bool {
+        return self.headers.contains_key("X-Payment-Proof");
+    }
+
+    fn parse_payment_proof(&self) -> Result<PaymentProof, str> {
+        let proof_header = self.header("X-Payment-Proof")
+            .ok_or("Missing X-Payment-Proof header".to_string())?;
+
+        // Proof format: "tx_hash:chain_id:block_number:shake_id"
+        let parts: Vec<&str> = proof_header.split(':').collect();
+        if parts.len() != 4 {
+            return Err("Invalid proof format, expected tx_hash:chain_id:block_number:shake_id".to_string());
+        }
+
+        let chain_id = parts[1].parse::<u64>()
+            .map_err(|_| "Invalid chain_id in proof".to_string())?;
+        let block_number = parts[2].parse::<u64>()
+            .map_err(|_| "Invalid block_number in proof".to_string())?;
+        let shake_id = parts[3].parse::<u256>()
+            .map_err(|_| "Invalid shake_id in proof".to_string())?;
+
+        return Ok(PaymentProof {
+            tx_hash: parts[0].to_string(),
+            chain_id: chain_id,
+            block_number: block_number,
+            shake_id: shake_id,
+        });
+    }
+}
+
+// ============================================================================
+// HTTP RESPONSE (x402)
+// ============================================================================
+
+struct X402Response {
+    status: u16,
+    payment_address: Address,
+    payment_amount: u256,
+    payment_chain: str,
+    payment_protocol: str,
+    shake_id: Option<u256>,
+    headers: Map<str, str>,
+    body: Vec<u8>,
+}
+
+impl X402Response {
+    fn ok(body: &[u8]) -> X402Response {
+        return X402Response {
+            status: 200,
+            payment_address: Address::zero(),
+            payment_amount: 0,
+            payment_chain: "".to_string(),
+            payment_protocol: "".to_string(),
+            shake_id: None,
+            headers: Map::new(),
+            body: body.to_vec(),
+        };
+    }
+
+    fn payment_required(
+        address: &Address,
+        amount: u256,
+        chain: &str,
+        protocol: &str,
+    ) -> X402Response {
+        let mut headers = Map::new();
+        headers.insert("X-Payment-Required".to_string(), "true".to_string());
+        headers.insert("X-Payment-Address".to_string(), address.to_hex());
+        headers.insert("X-Payment-Amount".to_string(), format!("{}", amount));
+        headers.insert("X-Payment-Chain".to_string(), chain.to_string());
+        headers.insert("X-Payment-Protocol".to_string(), protocol.to_string());
+
+        let body = format!(
+            "{{\"error\":\"payment_required\",\"address\":\"{}\",\"amount\":{},\"chain\":\"{}\",\"protocol\":\"{}\"}}",
+            address.to_hex(), amount, chain, protocol,
+        );
+
+        return X402Response {
+            status: 402,
+            payment_address: address.clone(),
+            payment_amount: amount,
+            payment_chain: chain.to_string(),
+            payment_protocol: protocol.to_string(),
+            shake_id: None,
+            headers: headers,
+            body: body.into_bytes(),
+        };
+    }
+
+    fn not_found() -> X402Response {
+        return X402Response {
+            status: 404,
+            payment_address: Address::zero(),
+            payment_amount: 0,
+            payment_chain: "".to_string(),
+            payment_protocol: "".to_string(),
+            shake_id: None,
+            headers: Map::new(),
+            body: b"{\"error\":\"not_found\"}".to_vec(),
+        };
+    }
+
+    fn bad_request(msg: &str) -> X402Response {
+        let body = format!("{{\"error\":\"bad_request\",\"message\":\"{}\"}}", msg);
+        return X402Response {
+            status: 400,
+            payment_address: Address::zero(),
+            payment_amount: 0,
+            payment_chain: "".to_string(),
+            payment_protocol: "".to_string(),
+            shake_id: None,
+            headers: Map::new(),
+            body: body.into_bytes(),
+        };
+    }
+
+    fn internal_error(msg: &str) -> X402Response {
+        let body = format!("{{\"error\":\"internal_error\",\"message\":\"{}\"}}", msg);
+        return X402Response {
+            status: 500,
+            payment_address: Address::zero(),
+            payment_amount: 0,
+            payment_chain: "".to_string(),
+            payment_protocol: "".to_string(),
+            shake_id: None,
+            headers: Map::new(),
+            body: body.into_bytes(),
+        };
+    }
+
+    fn with_shake_id(mut self, id: u256) -> X402Response {
+        self.shake_id = Some(id);
+        self.headers.insert("X-Shake-Id".to_string(), format!("{}", id));
+        return self;
+    }
+
+    fn serialize(&self) -> Vec<u8> {
+        let status_text = match self.status {
+            200 => "OK",
+            400 => "Bad Request",
+            402 => "Payment Required",
+            404 => "Not Found",
+            500 => "Internal Server Error",
+            _ => "Unknown",
+        };
+
+        let mut buf = format!(
+            "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
+            self.status, status_text, self.body.len(),
+        );
+
+        for (key, value) in &self.headers {
+            buf.push_str(&format!("{}: {}\r\n", key, value));
+        }
+        buf.push_str("\r\n");
+
+        let mut result = buf.into_bytes();
+        result.extend_from_slice(&self.body);
+        return result;
+    }
+}
+
+// ============================================================================
+// PAYMENT PROOF (on-chain transaction reference)
+// ============================================================================
+
+struct PaymentProof {
+    tx_hash: str,
+    chain_id: u64,
+    block_number: u64,
+    shake_id: u256,
+}
+
+impl PaymentProof {
+    fn new(tx_hash: &str, chain_id: u64, block_number: u64, shake_id: u256) -> PaymentProof {
+        return PaymentProof {
+            tx_hash: tx_hash.to_string(),
+            chain_id: chain_id,
+            block_number: block_number,
+            shake_id: shake_id,
+        };
+    }
+
+    fn encode(&self) -> str {
+        return format!("{}:{}:{}:{}",
+            self.tx_hash, self.chain_id, self.block_number, self.shake_id);
+    }
+
+    fn validate_chain(&self, expected_chain_id: u64) -> bool {
+        return self.chain_id == expected_chain_id;
+    }
+
+    fn validate_tx_hash(&self) -> bool {
+        // tx_hash must be 66 chars: "0x" + 64 hex digits
+        if self.tx_hash.len() != 66 {
+            return false;
+        }
+        if !self.tx_hash.starts_with("0x") {
+            return false;
+        }
+        for c in self.tx_hash[2..].chars() {
+            match c {
+                '0'..='9' | 'a'..='f' | 'A'..='F' => {}
+                _ => return false,
+            }
+        }
+        return true;
+    }
+}
+
+// ============================================================================
+// X402 ROUTE TABLE
+// ============================================================================
+
+enum X402Route {
+    GetShake { shake_id: u256 },
+    PostShake,
+    GetAgent { agent_address: Address },
+    ListJobs,
+    Health,
+    NotFound,
+}
+
+fn parse_route(method: &str, path: &str) -> X402Route {
+    match method {
+        "GET" => {
+            if path == "/health" {
+                return X402Route::Health;
+            }
+            if path == "/v1/jobs" {
+                return X402Route::ListJobs;
+            }
+            if path.starts_with("/v1/shake/") {
+                let id_str = &path[10..];
+                match id_str.parse::<u256>() {
+                    Ok(id) => return X402Route::GetShake { shake_id: id },
+                    Err(_) => return X402Route::NotFound,
+                }
+            }
+            if path.starts_with("/v1/agent/") {
+                let addr_str = &path[10..];
+                match Address::from_hex(addr_str) {
+                    Ok(addr) => return X402Route::GetAgent { agent_address: addr },
+                    Err(_) => return X402Route::NotFound,
+                }
+            }
+            return X402Route::NotFound;
+        }
+        "POST" => {
+            if path == "/v1/shake" {
+                return X402Route::PostShake;
+            }
+            return X402Route::NotFound;
+        }
+        _ => return X402Route::NotFound,
+    }
+}
+
+// ============================================================================
+// X402 SERVER — HTTP server with payment gating
+// ============================================================================
+
+struct X402Server {
+    escrow: EscrowClient,
+    registry: RegistryClient,
+    config: ShakeConfig,
+    payment_address: Address,
+    default_amount: u256,
+    chain_name: str,
+    protocol_version: str,
+}
+
+impl X402Server {
+    fn new(
+        config: ShakeConfig,
+        escrow: EscrowClient,
+        registry: RegistryClient,
+        payment_address: Address,
+    ) -> X402Server {
+        return X402Server {
+            escrow: escrow,
+            registry: registry,
+            config: config,
+            payment_address: payment_address,
+            default_amount: usdc(1.0),  // 1 USDC default per request
+            chain_name: "base-sepolia".to_string(),
+            protocol_version: "clawshake-v1".to_string(),
+        };
+    }
+
+    // ========================================================================
+    // REQUEST DISPATCH
+    // ========================================================================
+
+    fn handle_request(&mut self, request: &X402Request) -> X402Response {
+        println("[x402] {} {}", request.method, request.path);
+
+        let route = parse_route(&request.method, &request.path);
+
+        match route {
+            X402Route::Health => {
+                return self.handle_health();
+            }
+            X402Route::GetShake { shake_id } => {
+                return self.handle_get_shake(request, shake_id);
+            }
+            X402Route::PostShake => {
+                return self.handle_post_shake(request);
+            }
+            X402Route::GetAgent { agent_address } => {
+                return self.handle_get_agent(request, &agent_address);
+            }
+            X402Route::ListJobs => {
+                return self.handle_list_jobs(request);
+            }
+            X402Route::NotFound => {
+                return X402Response::not_found();
+            }
+        }
+    }
+
+    // ========================================================================
+    // GET /v1/shake/:id — retrieve shake details (payment-gated)
+    // ========================================================================
+
+    fn handle_get_shake(&mut self, request: &X402Request, shake_id: u256) -> X402Response {
+        println("[x402] GET /v1/shake/{}", shake_id);
+
+        // Verify payment proof or return 402
+        if !request.has_payment_proof() {
+            println("[x402] No payment proof — returning 402");
+            return X402Response::payment_required(
+                &self.payment_address,
+                self.default_amount,
+                &self.chain_name,
+                &self.protocol_version,
+            );
+        }
+
+        // Parse and validate payment proof
+        let proof = match request.parse_payment_proof() {
+            Ok(p) => p,
+            Err(e) => {
+                println("[x402] Invalid payment proof: {}", e);
+                return X402Response::bad_request(&e);
+            }
+        };
+
+        if !proof.validate_chain(self.config.chain_id) {
+            return X402Response::bad_request("Chain ID mismatch");
+        }
+
+        if !proof.validate_tx_hash() {
+            return X402Response::bad_request("Invalid transaction hash format");
+        }
+
+        // Verify the transaction on-chain via MIC@2
+        match self.verify_payment(&proof) {
+            Ok(verified) => {
+                if !verified {
+                    return X402Response::bad_request("Payment not confirmed on-chain");
+                }
+            }
+            Err(e) => {
+                println("[x402] Payment verification failed: {}", e);
+                return X402Response::internal_error("Payment verification failed");
+            }
+        }
+
+        // Payment verified — serve the shake data
+        let body = format!(
+            "{{\"shake_id\":{},\"status\":\"fetched\",\"proof_tx\":\"{}\"}}",
+            shake_id, proof.tx_hash,
+        );
+
+        return X402Response::ok(body.as_bytes())
+            .with_shake_id(shake_id);
+    }
+
+    // ========================================================================
+    // POST /v1/shake — create a new shake (requires payment)
+    // ========================================================================
+
+    fn handle_post_shake(&mut self, request: &X402Request) -> X402Response {
+        println("[x402] POST /v1/shake");
+
+        // Creating a shake requires on-chain payment via escrow
+        if !request.has_payment_proof() {
+            println("[x402] No payment proof for shake creation — returning 402");
+
+            // Calculate the required amount from the request body
+            let required_amount = self.extract_amount_from_body(&request.body)
+                .unwrap_or(self.default_amount);
+
+            return X402Response::payment_required(
+                &self.payment_address,
+                required_amount,
+                &self.chain_name,
+                &self.protocol_version,
+            );
+        }
+
+        // Parse payment proof
+        let proof = match request.parse_payment_proof() {
+            Ok(p) => p,
+            Err(e) => {
+                println("[x402] Invalid payment proof: {}", e);
+                return X402Response::bad_request(&e);
+            }
+        };
+
+        if !proof.validate_chain(self.config.chain_id) {
+            return X402Response::bad_request("Chain ID mismatch");
+        }
+
+        if !proof.validate_tx_hash() {
+            return X402Response::bad_request("Invalid transaction hash format");
+        }
+
+        // Verify the escrow creation transaction on-chain
+        match self.verify_escrow_creation(&proof) {
+            Ok(shake_id) => {
+                let body = format!(
+                    "{{\"shake_id\":{},\"status\":\"created\",\"tx_hash\":\"{}\"}}",
+                    shake_id, proof.tx_hash,
+                );
+                println("[x402] Shake #{} created via x402", shake_id);
+                return X402Response::ok(body.as_bytes())
+                    .with_shake_id(shake_id);
+            }
+            Err(e) => {
+                println("[x402] Escrow verification failed: {}", e);
+                return X402Response::internal_error("Escrow creation verification failed");
+            }
+        }
+    }
+
+    // ========================================================================
+    // GET /v1/agent/:address — query passport (payment-gated)
+    // ========================================================================
+
+    fn handle_get_agent(&mut self, request: &X402Request, agent_address: &Address) -> X402Response {
+        println("[x402] GET /v1/agent/{}", agent_address.to_hex());
+
+        // Passport lookups require payment
+        if !request.has_payment_proof() {
+            println("[x402] No payment proof for passport query — returning 402");
+            return X402Response::payment_required(
+                &self.payment_address,
+                self.default_amount,
+                &self.chain_name,
+                &self.protocol_version,
+            );
+        }
+
+        let proof = match request.parse_payment_proof() {
+            Ok(p) => p,
+            Err(e) => return X402Response::bad_request(&e),
+        };
+
+        if !proof.validate_chain(self.config.chain_id) {
+            return X402Response::bad_request("Chain ID mismatch");
+        }
+
+        // Verify payment, then query the registry
+        match self.verify_payment(&proof) {
+            Ok(verified) => {
+                if !verified {
+                    return X402Response::bad_request("Payment not confirmed on-chain");
+                }
+            }
+            Err(e) => {
+                return X402Response::internal_error("Payment verification failed");
+            }
+        }
+
+        // Fetch passport from registry
+        match self.registry.get_passport(agent_address) {
+            Ok(passport) => {
+                let body = format!(
+                    "{{\"agent\":\"{}\",\"name\":\"{}\",\"shakes_completed\":{},\"total_earned\":{},\"success_rate\":{},\"registered_at\":{}}}",
+                    passport.agent.to_hex(),
+                    passport.name,
+                    passport.shakes_completed,
+                    passport.total_earned,
+                    passport.success_rate,
+                    passport.registered_at,
+                );
+                return X402Response::ok(body.as_bytes());
+            }
+            Err(e) => {
+                println("[x402] Registry query failed: {}", e);
+                return X402Response::internal_error("Registry query failed");
+            }
+        }
+    }
+
+    // ========================================================================
+    // GET /v1/jobs — list open shakes (free endpoint, no payment required)
+    // ========================================================================
+
+    fn handle_list_jobs(&mut self, request: &X402Request) -> X402Response {
+        println("[x402] GET /v1/jobs");
+
+        // Job listing is a free endpoint — no payment gating.
+        // This allows discovery of available work without payment friction.
+        let body = format!(
+            "{{\"jobs\":[],\"chain\":\"{}\",\"protocol\":\"{}\"}}",
+            self.chain_name,
+            self.protocol_version,
+        );
+
+        return X402Response::ok(body.as_bytes());
+    }
+
+    // ========================================================================
+    // GET /health — server health check (free endpoint)
+    // ========================================================================
+
+    fn handle_health(&self) -> X402Response {
+        let now = time::now_unix();
+        let body = format!(
+            "{{\"status\":\"ok\",\"chain\":\"{}\",\"protocol\":\"{}\",\"payment_address\":\"{}\",\"timestamp\":{}}}",
+            self.chain_name,
+            self.protocol_version,
+            self.payment_address.to_hex(),
+            now,
+        );
+
+        return X402Response::ok(body.as_bytes());
+    }
+
+    // ========================================================================
+    // PAYMENT VERIFICATION — on-chain via MIC@2
+    // ========================================================================
+
+    fn verify_payment(&mut self, proof: &PaymentProof) -> Result<bool, str> {
+        println("[x402] Verifying payment tx: {} on chain {}",
+            proof.tx_hash, proof.chain_id);
+
+        // Fetch the transaction receipt via MIC@2
+        let result = self.escrow.transport.exec(MicOp::GetReceipt {
+            tx_hash: proof.tx_hash.clone(),
+        });
+
+        match result {
+            Ok(MicResult::Receipt(receipt)) => {
+                // Check transaction succeeded
+                if !receipt.status {
+                    println("[x402] Transaction reverted: {}", proof.tx_hash);
+                    return Ok(false);
+                }
+
+                // Check block number is plausible (within recent window)
+                if proof.block_number > 0 && receipt.block_number > 0 {
+                    if receipt.block_number != proof.block_number {
+                        println("[x402] Block number mismatch: claimed {} vs actual {}",
+                            proof.block_number, receipt.block_number);
+                        return Ok(false);
+                    }
+                }
+
+                println("[x402] Payment verified: {} (block {})",
+                    proof.tx_hash, receipt.block_number);
+                return Ok(true);
+            }
+            Ok(_) => {
+                return Err("Unexpected response type from receipt query".to_string());
+            }
+            Err(e) => {
+                return Err(format!("Receipt query failed: {:?}", e));
+            }
+        }
+    }
+
+    fn verify_escrow_creation(&mut self, proof: &PaymentProof) -> Result<u256, str> {
+        println("[x402] Verifying escrow creation tx: {}", proof.tx_hash);
+
+        let result = self.escrow.transport.exec(MicOp::GetReceipt {
+            tx_hash: proof.tx_hash.clone(),
+        });
+
+        match result {
+            Ok(MicResult::Receipt(receipt)) => {
+                if !receipt.status {
+                    return Err("Escrow creation transaction reverted".to_string());
+                }
+
+                // Extract shake ID from the ShakeCreated event log
+                let shake_id = self.escrow.extract_shake_id(&MicResult::Receipt(receipt));
+                return Ok(shake_id);
+            }
+            Ok(_) => {
+                return Err("Unexpected response from receipt query".to_string());
+            }
+            Err(e) => {
+                return Err(format!("Receipt query failed: {:?}", e));
+            }
+        }
+    }
+
+    fn extract_amount_from_body(&self, body: &[u8]) -> Option<u256> {
+        // Parse "amount" field from JSON body
+        let body_str = String::from_utf8_lossy(body);
+        let pattern = "\"amount\":";
+
+        if let Some(start) = body_str.find(pattern) {
+            let start = start + pattern.len();
+            let rest = &body_str[start..];
+
+            // Find the end of the number
+            let mut end = 0;
+            for c in rest.chars() {
+                match c {
+                    '0'..='9' => end += 1,
+                    _ => break,
+                }
+            }
+
+            if end > 0 {
+                match rest[..end].parse::<u256>() {
+                    Ok(amount) => return Some(amount),
+                    Err(_) => return None,
+                }
+            }
+        }
+
+        return None;
+    }
+}
+
+// ============================================================================
+// X402 CLIENT — programmatic payment flow
+// ============================================================================
+
+struct X402Client {
+    base_url: str,
+    chain_id: u64,
+    signer: PrivateKey,
+}
+
+impl X402Client {
+    fn new(base_url: &str, chain_id: u64, signer: PrivateKey) -> X402Client {
+        return X402Client {
+            base_url: base_url.to_string(),
+            chain_id: chain_id,
+            signer: signer,
+        };
+    }
+
+    /// Execute a request with automatic 402 payment handling.
+    /// If the server returns 402, the client reads the payment headers,
+    /// submits a USDC transaction, and retries with the proof.
+    fn request_with_payment(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+        escrow: &mut EscrowClient,
+    ) -> Result<X402Response, str> {
+        // First attempt: no payment proof
+        let mut req = X402Request::new(method, path);
+        req.body = body.to_vec();
+
+        let response = self.send_request(&req)?;
+
+        if response.status != 402 {
+            return Ok(response);
+        }
+
+        // Server demands payment — extract requirements from headers
+        let payment_address = response.headers.get("X-Payment-Address")
+            .ok_or("Missing X-Payment-Address in 402 response".to_string())?;
+        let payment_amount_str = response.headers.get("X-Payment-Amount")
+            .ok_or("Missing X-Payment-Amount in 402 response".to_string())?;
+        let payment_chain = response.headers.get("X-Payment-Chain")
+            .ok_or("Missing X-Payment-Chain in 402 response".to_string())?;
+
+        let payment_amount = payment_amount_str.parse::<u256>()
+            .map_err(|_| "Invalid payment amount".to_string())?;
+        let target_address = Address::from_hex(payment_address)
+            .map_err(|e| format!("Invalid payment address: {}", e))?;
+
+        println("[x402-client] Payment required: {} USDC to {}",
+            from_usdc(payment_amount), payment_address);
+
+        // Approve and transfer USDC via escrow
+        escrow.approve_usdc(payment_amount)?;
+
+        // Submit the payment transaction
+        let tx_hash = escrow.transport.exec(MicOp::SendTx {
+            target: target_address,
+            calldata: Vec::new(),
+            value: 0,
+            gas_limit: 100_000,
+        }).map_err(|e| format!("Payment transaction failed: {:?}", e))?;
+
+        let tx_hash_str = match tx_hash {
+            MicResult::Hash(h) => h,
+            _ => return Err("Unexpected result from payment tx".to_string()),
+        };
+
+        // Wait for confirmation
+        let receipt_result = escrow.transport.exec(MicOp::GetReceipt {
+            tx_hash: tx_hash_str.clone(),
+        }).map_err(|e| format!("Receipt query failed: {:?}", e))?;
+
+        let block_number = match &receipt_result {
+            MicResult::Receipt(r) => r.block_number,
+            _ => 0,
+        };
+
+        // Retry with payment proof
+        let proof = PaymentProof::new(&tx_hash_str, self.chain_id, block_number, 0);
+        let mut retry_req = X402Request::new(method, path);
+        retry_req.body = body.to_vec();
+        retry_req.headers.insert(
+            "X-Payment-Proof".to_string(),
+            proof.encode(),
+        );
+
+        println("[x402-client] Retrying with payment proof: {}", proof.encode());
+
+        let final_response = self.send_request(&retry_req)?;
+        return Ok(final_response);
+    }
+
+    fn send_request(&self, request: &X402Request) -> Result<X402Response, str> {
+        let host = self.extract_host(&self.base_url);
+        let port: u16 = 443;
+
+        let socket = net::tls_connect(&host, port, 15000)
+            .map_err(|e| format!("Connection failed: {}", e))?;
+
+        let mut http_request = format!(
+            "{} {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
+            request.method, request.path, host, request.body.len(),
+        );
+
+        for (key, value) in &request.headers {
+            http_request.push_str(&format!("{}: {}\r\n", key, value));
+        }
+        http_request.push_str("Connection: close\r\n\r\n");
+
+        let mut raw = http_request.into_bytes();
+        raw.extend_from_slice(&request.body);
+
+        socket.write_all(&raw)
+            .map_err(|e| format!("Write failed: {}", e))?;
+
+        let response_bytes = socket.read_all_timeout(15000)
+            .map_err(|e| format!("Read failed: {}", e))?;
+
+        return self.parse_response(&response_bytes);
+    }
+
+    fn extract_host(&self, url: &str) -> str {
+        let without_scheme = if url.starts_with("https://") {
+            &url[8..]
+        } else if url.starts_with("http://") {
+            &url[7..]
+        } else {
+            url
+        };
+
+        match without_scheme.find('/') {
+            Some(pos) => return without_scheme[..pos].to_string(),
+            None => return without_scheme.to_string(),
+        }
+    }
+
+    fn parse_response(&self, raw: &[u8]) -> Result<X402Response, str> {
+        let response_str = String::from_utf8_lossy(raw);
+
+        // Parse status line
+        let status_line_end = response_str.find("\r\n")
+            .ok_or("Invalid HTTP response".to_string())?;
+        let status_line = &response_str[..status_line_end];
+
+        let status: u16 = {
+            let parts: Vec<&str> = status_line.split(' ').collect();
+            if parts.len() < 2 {
+                return Err("Invalid status line".to_string());
+            }
+            parts[1].parse::<u16>()
+                .map_err(|_| "Invalid status code".to_string())?
+        };
+
+        // Parse headers
+        let header_end = response_str.find("\r\n\r\n")
+            .ok_or("No header/body boundary".to_string())?;
+        let header_section = &response_str[status_line_end + 2..header_end];
+        let mut headers = Map::new();
+
+        for line in header_section.split("\r\n") {
+            if let Some(colon) = line.find(": ") {
+                let key = line[..colon].to_string();
+                let value = line[colon + 2..].to_string();
+                headers.insert(key, value);
+            }
+        }
+
+        // Extract body
+        let body = response_str[header_end + 4..].as_bytes().to_vec();
+
+        // Extract x402 payment fields if 402
+        let payment_address = if status == 402 {
+            match headers.get("X-Payment-Address") {
+                Some(addr) => Address::from_hex(addr).unwrap_or(Address::zero()),
+                None => Address::zero(),
+            }
+        } else {
+            Address::zero()
+        };
+
+        let payment_amount = if status == 402 {
+            headers.get("X-Payment-Amount")
+                .and_then(|s| s.parse::<u256>().ok())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        let payment_chain = headers.get("X-Payment-Chain")
+            .cloned()
+            .unwrap_or_default();
+
+        let payment_protocol = headers.get("X-Payment-Protocol")
+            .cloned()
+            .unwrap_or_default();
+
+        return Ok(X402Response {
+            status: status,
+            payment_address: payment_address,
+            payment_amount: payment_amount,
+            payment_chain: payment_chain,
+            payment_protocol: payment_protocol,
+            shake_id: None,
+            headers: headers,
+            body: body,
+        });
+    }
+}

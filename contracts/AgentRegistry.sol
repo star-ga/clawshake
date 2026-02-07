@@ -33,6 +33,7 @@ contract AgentRegistry {
     mapping(address => AgentPassport) public passports;
     mapping(bytes32 => address) public agentIdToAddress;
     mapping(address => bool) public authorizedCallers; // ShakeEscrow etc.
+    mapping(bytes32 => address[]) public skillIndex; // keccak256(skill) → agents
     address[] public registeredAgents;
     address public owner;
 
@@ -90,6 +91,13 @@ contract AgentRegistry {
 
         agentIdToAddress[agentId] = msg.sender;
         registeredAgents.push(msg.sender);
+
+        // Populate skill index for discovery
+        for (uint256 i = 0; i < skills.length; i++) {
+            bytes32 skillKey = keccak256(abi.encodePacked(skills[i]));
+            skillIndex[skillKey].push(msg.sender);
+        }
+
         emit AgentRegistered(msg.sender, agentId, name);
     }
 
@@ -141,6 +149,75 @@ contract AgentRegistry {
     /// @notice Get agent skills
     function getSkills(address agent) external view returns (string[] memory) {
         return passports[agent].skills;
+    }
+
+    // --- Discovery Functions ---
+
+    /// @notice Find all agents with a specific skill
+    function searchBySkill(string calldata skill) external view returns (address[] memory) {
+        bytes32 skillKey = keccak256(abi.encodePacked(skill));
+        return skillIndex[skillKey];
+    }
+
+    /// @notice Get top agents by success rate (minimum 5 completed shakes)
+    function getTopAgents(uint256 count) external view returns (address[] memory) {
+        uint256 total = registeredAgents.length;
+        if (count > total) count = total;
+
+        // Collect eligible agents (min 5 shakes)
+        address[] memory eligible = new address[](total);
+        uint256 eligibleCount = 0;
+        for (uint256 i = 0; i < total; i++) {
+            if (passports[registeredAgents[i]].totalShakes >= 5) {
+                eligible[eligibleCount++] = registeredAgents[i];
+            }
+        }
+
+        // Simple selection sort for top N by successRate
+        for (uint256 i = 0; i < count && i < eligibleCount; i++) {
+            uint256 bestIdx = i;
+            for (uint256 j = i + 1; j < eligibleCount; j++) {
+                if (passports[eligible[j]].successRate > passports[eligible[bestIdx]].successRate) {
+                    bestIdx = j;
+                }
+            }
+            if (bestIdx != i) {
+                (eligible[i], eligible[bestIdx]) = (eligible[bestIdx], eligible[i]);
+            }
+        }
+
+        // Return top N
+        uint256 resultCount = count < eligibleCount ? count : eligibleCount;
+        address[] memory result = new address[](resultCount);
+        for (uint256 i = 0; i < resultCount; i++) {
+            result[i] = eligible[i];
+        }
+        return result;
+    }
+
+    /// @notice Filter agents by minimum success rate (in basis points, e.g., 9000 = 90%)
+    function getAgentsByMinRating(uint256 minSuccessRate) external view returns (address[] memory) {
+        uint256 total = registeredAgents.length;
+
+        // Count matching agents first
+        uint256 matchCount = 0;
+        for (uint256 i = 0; i < total; i++) {
+            if (passports[registeredAgents[i]].successRate >= minSuccessRate &&
+                passports[registeredAgents[i]].active) {
+                matchCount++;
+            }
+        }
+
+        // Build result array
+        address[] memory result = new address[](matchCount);
+        uint256 idx = 0;
+        for (uint256 i = 0; i < total; i++) {
+            if (passports[registeredAgents[i]].successRate >= minSuccessRate &&
+                passports[registeredAgents[i]].active) {
+                result[idx++] = registeredAgents[i];
+            }
+        }
+        return result;
     }
 
     // SBT: intentionally no transfer function — passports are non-transferable

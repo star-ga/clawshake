@@ -10,7 +10,7 @@
   <a href="https://sepolia.basescan.org/address/0xa33F9fA90389465413FFb880FD41e914b7790C61"><img src="https://img.shields.io/badge/Base_Sepolia-Deployed-3B82F6?logo=ethereum&logoColor=white" alt="Deployed on Base Sepolia"></a>
   <a href="https://www.circle.com/usdc"><img src="https://img.shields.io/badge/USDC-Powered-2775CA?logo=circle&logoColor=white" alt="USDC Powered"></a>
   <img src="https://img.shields.io/badge/Solidity-0.8.24-363636?logo=solidity&logoColor=white" alt="Solidity 0.8.24">
-  <img src="https://img.shields.io/badge/Tests-47_passing-brightgreen?logo=checkmarx&logoColor=white" alt="47 Tests Passing">
+  <img src="https://img.shields.io/badge/Tests-65_passing-brightgreen?logo=checkmarx&logoColor=white" alt="65 Tests Passing">
   <img src="https://img.shields.io/badge/Gas-$0.07_full_chain-orange?logo=gaslamp&logoColor=white" alt="Gas Cost">
   <img src="https://img.shields.io/badge/License-Apache_2.0-yellow?logo=opensourceinitiative&logoColor=white" alt="Apache 2.0 License">
   <img src="https://img.shields.io/badge/MIND-SDK-8B5CF6?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJ3aGl0ZSI+PHBhdGggZD0iTTEyIDJMMiA3bDEwIDUgMTAtNS0xMC01ek0yIDE3bDEwIDUgMTAtNS0xMC01LTEwIDV6TTIgMTJsMTAgNSAxMC01LTEwLTUtMTAgNXoiLz48L3N2Zz4=&logoColor=white" alt="MIND SDK">
@@ -64,7 +64,7 @@ npm install
 # Compile contracts
 npm run compile
 
-# Run tests (47 passing)
+# Run tests (65 passing)
 npm test
 
 # Run demo (2-child hire chain)

@@ -76,6 +76,8 @@ contract ShakeEscrow is ReentrancyGuard {
         bytes32 deliveryHash; // IPFS hash of delivery proof
         bool isChildShake;    // true if created via createChildShake
         uint48 disputeFrozenUntil; // 0 = not frozen, >0 = frozen until child dispute resolves
+        bytes32 requesterPubKeyHash;   // Hash of requester's encryption pubkey (0 = unencrypted)
+        bytes32 encryptedDeliveryKey;  // Symmetric key encrypted with requester's pubkey
     }
 
     mapping(uint256 => Shake) public shakes;
@@ -161,7 +163,41 @@ contract ShakeEscrow is ReentrancyGuard {
             taskHash: taskHash,
             deliveryHash: bytes32(0),
             isChildShake: false,
-            disputeFrozenUntil: 0
+            disputeFrozenUntil: 0,
+            requesterPubKeyHash: bytes32(0),
+            encryptedDeliveryKey: bytes32(0)
+        });
+
+        usdc.safeTransferFrom(msg.sender, address(this), amount);
+        emit ShakeCreated(shakeId, msg.sender, amount, taskHash);
+    }
+
+    /// @notice Create a shake with encrypted delivery support
+    /// @param requesterPubKeyHash Hash of requester's X25519 public key for encrypted deliveries
+    function createShakeEncrypted(
+        uint256 amount,
+        uint48 deadline,
+        bytes32 taskHash,
+        bytes32 requesterPubKeyHash
+    ) external nonReentrant returns (uint256 shakeId) {
+        if (amount == 0) revert AmountZero();
+        if (deadline == 0) revert DeadlineZero();
+
+        shakeId = nextShakeId++;
+        shakes[shakeId] = Shake({
+            requester: msg.sender,
+            worker: address(0),
+            amount: amount,
+            parentShakeId: 0,
+            deadline: uint48(block.timestamp) + deadline,
+            deliveredAt: 0,
+            status: ShakeStatus.Pending,
+            taskHash: taskHash,
+            deliveryHash: bytes32(0),
+            isChildShake: false,
+            disputeFrozenUntil: 0,
+            requesterPubKeyHash: requesterPubKeyHash,
+            encryptedDeliveryKey: bytes32(0)
         });
 
         usdc.safeTransferFrom(msg.sender, address(this), amount);
@@ -188,6 +224,20 @@ contract ShakeEscrow is ReentrancyGuard {
         if (msg.sender != s.worker) revert NotWorker();
 
         s.deliveryHash = deliveryHash;
+        s.deliveredAt = uint48(block.timestamp);
+        s.status = ShakeStatus.Delivered;
+        emit ShakeDelivered(shakeId, deliveryHash);
+    }
+
+    /// @notice Deliver with encrypted delivery key (for encrypted shakes)
+    /// @param encryptedDeliveryKey Symmetric key encrypted with requester's public key
+    function deliverShakeEncrypted(uint256 shakeId, bytes32 deliveryHash, bytes32 encryptedDeliveryKey) external {
+        Shake storage s = shakes[shakeId];
+        if (s.status != ShakeStatus.Active) revert NotActive();
+        if (msg.sender != s.worker) revert NotWorker();
+
+        s.deliveryHash = deliveryHash;
+        s.encryptedDeliveryKey = encryptedDeliveryKey;
         s.deliveredAt = uint48(block.timestamp);
         s.status = ShakeStatus.Delivered;
         emit ShakeDelivered(shakeId, deliveryHash);
@@ -332,7 +382,9 @@ contract ShakeEscrow is ReentrancyGuard {
             taskHash: taskHash,
             deliveryHash: bytes32(0),
             isChildShake: true,
-            disputeFrozenUntil: 0
+            disputeFrozenUntil: 0,
+            requesterPubKeyHash: bytes32(0),
+            encryptedDeliveryKey: bytes32(0)
         });
 
         // No new USDC transfer needed — funds already in contract from parent
