@@ -746,8 +746,8 @@ a33F9fA90389465413FFb880FD41e914b7790C61    # target (20B)
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                     CLAWSHAKE PROTOCOL                    │
-│            (Base L2 — Native USDC Settlement)            │
+│                     CLAWSHAKE PROTOCOL                  │
+│            (Base L2 — Native USDC Settlement)           │
 ├──────────────────────┬──────────────────────────────────┤
 │ On-chain (Solidity)  │  HTTP Layer                      │
 │                      │                                  │
